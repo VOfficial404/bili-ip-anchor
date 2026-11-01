@@ -1,0 +1,8 @@
+# 登录会话，等同账号权限，绝不能提交
+cookies.json
+data/
+.env
+
+/bili-ip-anchor
+/bili-ip-anchor.exe
+/dist/

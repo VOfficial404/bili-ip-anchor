@@ -1,0 +1,20 @@
+services:
+  bili-ip-anchor:
+    image: ghcr.io/vofficial404/bili-ip-anchor:latest
+    # 想自己从源码构建，把上面一行注释掉，换成：
+    # build: .
+    container_name: bili-ip-anchor
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      INTERVAL: ${INTERVAL:-6h}
+      JITTER: ${JITTER:-30m}
+      BVID: ${BVID:-BV1GJ411x7h7}
+      DO_DYNAMIC: ${DO_DYNAMIC:-false}
+    volumes:
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "3"
