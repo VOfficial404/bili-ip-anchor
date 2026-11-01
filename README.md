@@ -16,7 +16,7 @@
 2. 之后每隔一段时间（默认 6 小时 + 0~30 分钟随机抖动），程序以这个会话：
    - 请求 `nav` 接口确认登录状态；
    - 上报一次视频观看心跳；
-   - （可选，默认关闭）发一条动态，几秒后删除。
+   - （可选，默认关闭）发一条图片动态，几秒后删除。
 3. 这些请求都从服务器发出，B 站记录到的是服务器的 IP。
 
 每轮只有几 KB 流量。
@@ -170,12 +170,18 @@ systemctl daemon-reload && systemctl enable --now bili-ip-anchor
 | `WEBUI_PORT` | `8080` | 仅 Compose：映射到服务器本机的端口 |
 | `INTERVAL` | `6h` | 每轮间隔，Go duration 格式，如 `90m`、`12h`，最少 `10m` |
 | `JITTER` | `30m` | 每轮额外随机等待 0~JITTER，避免时间过于规律 |
-| `BVID` | `BV1GJ411x7h7` | 心跳上报使用的视频，任意公开视频即可 |
-| `DO_DYNAMIC` | `false` | 每轮发一条动态再删除。只发心跳不生效时再打开；动态会短暂出现在粉丝的动态流里 |
+| `BVID` | `BV15HFVz1EvM` | 心跳上报使用的视频，任意公开视频即可 |
+| `DO_DYNAMIC` | `false` | 每轮发一条图片动态再删除。只发心跳不生效时再打开；动态会短暂出现在粉丝的动态流里。图片见下文「动态图片」 |
 | `DATA_DIR` | 镜像内 `/data`；二进制为所在目录 | `cookies.json`、`settings.json` 存放位置 |
 | `TZ` | `Asia/Shanghai` | 日志时区 |
 
 `INTERVAL`、`JITTER`、`BVID`、`DO_DYNAMIC` 在 WebUI 里保存过之后，以 `data/settings.json` 为准，环境变量不再生效。想恢复用环境变量，删除这个文件并重启即可。
+
+## 动态图片
+
+打开 `DO_DYNAMIC` 后，每轮发的动态内容是一张图片，没有文字。默认使用仓库里的 [`assets/dynamic.jpg`](assets/dynamic.jpg)（已打包进程序）。
+
+想换成别的图片，把 `dynamic.jpg` 或 `dynamic.png` 放进数据目录（Compose 下是 `./data/`），下一轮就会用它，不需要重启。
 
 ## 验证是否生效
 
@@ -215,4 +221,4 @@ WebUI 的页面在 `web/` 目录，编译时通过 `go:embed` 打包进二进制
 
 ## 许可
 
-[MIT](LICENSE)。本项目与哔哩哔哩官方无关。
+[MIT](LICENSE)。`assets/dynamic.jpg` 不在 MIT 许可范围内，版权归原作者所有。本项目与哔哩哔哩官方无关。

@@ -32,7 +32,7 @@ func loadConfig() config {
 		WebAddr:     envOr("WEBUI_ADDR", ":8080"),
 		WebPassword: os.Getenv("WEBUI_PASSWORD"),
 		Defaults: settings{
-			BVID:      envOr("BVID", "BV1GJ411x7h7"),
+			BVID:      envOr("BVID", "BV15HFVz1EvM"),
 			DoDynamic: envBool("DO_DYNAMIC", false),
 			Interval:  duration(envDuration("INTERVAL", 6*time.Hour)),
 			Jitter:    duration(envDuration("JITTER", 30*time.Minute)),

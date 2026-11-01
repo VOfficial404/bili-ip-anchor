@@ -9,7 +9,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       INTERVAL: ${INTERVAL:-6h}
       JITTER: ${JITTER:-30m}
-      BVID: ${BVID:-BV1GJ411x7h7}
+      BVID: ${BVID:-BV15HFVz1EvM}
       DO_DYNAMIC: ${DO_DYNAMIC:-false}
       # 设置后启用 WebUI；留空则只在后台定时运行
       WEBUI_PASSWORD: ${WEBUI_PASSWORD:-}

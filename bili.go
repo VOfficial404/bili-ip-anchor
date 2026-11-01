@@ -2,16 +2,19 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -60,11 +63,16 @@ func (c *biliClient) do(method, rawURL string, form url.Values, body any, out an
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Referer", "https://www.bilibili.com/")
 	if ctype != "" {
 		req.Header.Set("Content-Type", ctype)
 	}
+	return c.send(req, out)
+}
+
+// send 补上通用请求头和 Cookie，发出请求并解析 JSON 响应
+func (c *biliClient) send(req *http.Request, out any) error {
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Referer", "https://www.bilibili.com/")
 	for k, v := range c.cookies {
 		req.AddCookie(&http.Cookie{Name: k, Value: v})
 	}
@@ -74,7 +82,7 @@ func (c *biliClient) do(method, rawURL string, form url.Values, body any, out an
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s %s: HTTP %d", method, rawURL, resp.StatusCode)
+		return fmt.Errorf("%s %s: HTTP %d", req.Method, req.URL, resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -227,8 +235,76 @@ func refresh(s settings) (string, error) {
 	return uname, nil
 }
 
+//go:embed assets/dynamic.jpg
+var defaultDynamicImage []byte
+
+// dynamicImage 优先用数据目录里的 dynamic.jpg / dynamic.png，没有就用内置图片
+func dynamicImage() (name string, data []byte, err error) {
+	for _, n := range []string{"dynamic.jpg", "dynamic.png"} {
+		data, err = os.ReadFile(filepath.Join(cfg.DataDir, n))
+		if err == nil {
+			return n, data, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", nil, err
+		}
+	}
+	return "dynamic.jpg", defaultDynamicImage, nil
+}
+
+type uploadedPic struct {
+	URL    string  `json:"image_url"`
+	Width  int     `json:"image_width"`
+	Height int     `json:"image_height"`
+	Size   float64 `json:"img_size"` // KB
+}
+
+func (c *biliClient) uploadImage(csrf, name string, data []byte) (uploadedPic, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file_up", name)
+	if err != nil {
+		return uploadedPic{}, err
+	}
+	fw.Write(data)
+	mw.WriteField("biz", "new_dyn")
+	mw.WriteField("category", "daily")
+	mw.WriteField("csrf", csrf)
+	if err := mw.Close(); err != nil {
+		return uploadedPic{}, err
+	}
+	req, err := http.NewRequest("POST", "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs", &buf)
+	if err != nil {
+		return uploadedPic{}, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	var r struct {
+		apiResp
+		Data uploadedPic `json:"data"`
+	}
+	if err := c.send(req, &r); err != nil {
+		return uploadedPic{}, err
+	}
+	if r.Code != 0 || r.Data.URL == "" {
+		return uploadedPic{}, fmt.Errorf("上传图片失败：%d %s", r.Code, r.Message)
+	}
+	return r.Data, nil
+}
+
+// removeDelay 发动态后等多久再删；测试里会改成 0
+var removeDelay = func() time.Duration { return time.Duration(5+rand.Intn(16)) * time.Second }
+
 func postAndRemoveDynamic(c *biliClient, csrf string) error {
-	texts := []string{"打卡", "路过", "1"}
+	name, data, err := dynamicImage()
+	if err != nil {
+		return err
+	}
+	pic, err := c.uploadImage(csrf, name, data)
+	if err != nil {
+		return err
+	}
+	log.Printf("上传图片：%dx%d", pic.Width, pic.Height)
+
 	var cr struct {
 		apiResp
 		Data struct {
@@ -237,10 +313,15 @@ func postAndRemoveDynamic(c *biliClient, csrf string) error {
 	}
 	if err := c.do("POST", "https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf="+url.QueryEscape(csrf), nil, map[string]any{
 		"dyn_req": map[string]any{
-			"content": map[string]any{"contents": []map[string]any{
-				{"raw_text": texts[rand.Intn(len(texts))], "type": 1, "biz_id": ""},
+			"content": map[string]any{"contents": []map[string]any{}},
+			"pics": []map[string]any{{
+				"img_src":    pic.URL,
+				"img_width":  pic.Width,
+				"img_height": pic.Height,
+				"img_size":   pic.Size,
 			}},
-			"scene": 1,
+			"scene": 2, // 2 = 带图动态
+			"meta":  map[string]any{"app_meta": map[string]any{"from": "create.dynamic.web", "mobi_app": "web"}},
 		},
 	}, &cr); err != nil {
 		return err
@@ -250,7 +331,7 @@ func postAndRemoveDynamic(c *biliClient, csrf string) error {
 		return fmt.Errorf("发动态失败：%d %s", cr.Code, cr.Message)
 	}
 
-	time.Sleep(time.Duration(5+rand.Intn(16)) * time.Second)
+	time.Sleep(removeDelay())
 	var rr apiResp
 	if err := c.do("POST", "https://api.bilibili.com/x/dynamic/feed/operate/remove?csrf="+url.QueryEscape(csrf), nil,
 		map[string]any{"dyn_id_str": cr.Data.DynID}, &rr); err != nil {
