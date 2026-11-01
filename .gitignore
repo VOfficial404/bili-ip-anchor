@@ -1,5 +1,6 @@
 # 登录会话，等同账号权限，绝不能提交
 cookies.json
+settings.json
 data/
 .env
 

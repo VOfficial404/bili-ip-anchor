@@ -6,6 +6,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
+COPY web ./web
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /out/bili-ip-anchor .
 
@@ -15,5 +16,6 @@ COPY --from=build /out/bili-ip-anchor /usr/local/bin/bili-ip-anchor
 ENV DATA_DIR=/data \
     TZ=Asia/Shanghai
 VOLUME /data
+EXPOSE 8080
 ENTRYPOINT ["bili-ip-anchor"]
 CMD ["daemon"]

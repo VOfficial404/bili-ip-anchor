@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>bili-ip-anchor</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<header class="bar">
+  <span class="brand">bili-ip-anchor</span>
+  <button type="button" class="link" id="signout" hidden>锁定</button>
+</header>
+
+<main id="gate" hidden>
+  <form id="gate-form" class="gate">
+    <h1>输入密码</h1>
+    <p class="muted">就是启动时 <code>WEBUI_PASSWORD</code> 里设置的那个。</p>
+    <label for="password" class="sr-only">密码</label>
+    <input id="password" type="password" autocomplete="current-password" required autofocus>
+    <p class="error" id="gate-error" role="alert"></p>
+    <button type="submit" class="primary">进入</button>
+  </form>
+</main>
+
+<main id="panel" hidden>
+  <section class="hero" aria-live="polite">
+    <p class="muted">B 站把这台服务器识别为</p>
+    <h1 class="place" id="place">查询中</h1>
+    <p class="place-meta" id="place-meta"></p>
+    <p class="note">主页的 IP 属地按省份显示。这里只说明服务器出口 IP 在 B 站那边的归属，主页是否已更新，请用无痕窗口查看你的个人空间。</p>
+  </section>
+
+  <section class="block">
+    <h2>账号与运行</h2>
+    <dl class="rows">
+      <dt>账号</dt>
+      <dd>
+        <span id="account"></span>
+        <span class="actions">
+          <button type="button" class="primary" id="qr-open">扫码登录</button>
+          <button type="button" class="secondary" id="bili-logout" hidden>退出账号</button>
+        </span>
+      </dd>
+
+      <dt>上次运行</dt>
+      <dd>
+        <span id="last"></span>
+        <span class="actions">
+          <button type="button" class="secondary" id="run">立即运行</button>
+        </span>
+        <span class="error-line" id="last-error"></span>
+      </dd>
+
+      <dt>下次运行</dt>
+      <dd id="next"></dd>
+    </dl>
+  </section>
+
+  <section class="block">
+    <h2>设置</h2>
+    <form id="settings" class="settings">
+      <label for="interval">每轮间隔</label>
+      <div>
+        <input id="interval" name="interval" required spellcheck="false" inputmode="text">
+        <p class="hint">写成 90m、6h、12h 这样，最少 10m。</p>
+      </div>
+
+      <label for="jitter">随机抖动</label>
+      <div>
+        <input id="jitter" name="jitter" required spellcheck="false">
+        <p class="hint">每轮额外随机等 0 到这么久，让时间不那么规律。</p>
+      </div>
+
+      <label for="bvid">心跳视频</label>
+      <div>
+        <input id="bvid" name="bvid" required spellcheck="false" pattern="BV[0-9A-Za-z]{10}">
+        <p class="hint">任意一个公开视频的 BV 号。</p>
+      </div>
+
+      <span class="label">发动态</span>
+      <div>
+        <label class="check"><input type="checkbox" id="dynamic" name="dynamic"> 每轮发一条动态，几秒后删掉</label>
+        <p class="hint">只发心跳不能改变属地时再打开。动态会短暂出现在粉丝的动态流里。</p>
+      </div>
+
+      <span></span>
+      <div class="form-end">
+        <button type="submit" class="primary" id="save">保存设置</button>
+        <span class="saved" id="saved" role="status"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="block">
+    <h2>日志</h2>
+    <pre class="log" id="log" tabindex="0" aria-label="最近日志"></pre>
+  </section>
+
+  <footer class="foot">
+    <span id="version"></span>
+    <a href="https://github.com/VOfficial404/bili-ip-anchor" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+</main>
+
+<dialog id="qr" aria-labelledby="qr-title">
+  <h2 id="qr-title">用 B 站 App 扫码</h2>
+  <div class="qr-frame"><img id="qr-img" alt="B 站登录二维码" width="264" height="264"></div>
+  <p id="qr-state" role="status">正在获取二维码</p>
+  <div class="qr-actions">
+    <button type="button" class="secondary" id="qr-renew" hidden>换一张</button>
+    <button type="button" class="link" id="qr-close">取消</button>
+  </div>
+</dialog>
+
+</body>
+</html>
