@@ -75,7 +75,6 @@ func exeDir() string {
 	return filepath.Dir(p)
 }
 
-func cookieFile() string   { return filepath.Join(cfg.DataDir, "cookies.json") }
 func settingsFile() string { return filepath.Join(cfg.DataDir, "settings.json") }
 
 func jitter(max time.Duration) time.Duration {
@@ -94,13 +93,14 @@ func cliLogin() error {
 	fmt.Println("用 B 站 App 扫码并确认登录（二维码约 3 分钟内有效）...")
 	for {
 		time.Sleep(2 * time.Second)
-		st, err := q.poll()
+		st, mid, err := q.poll()
 		if err != nil {
 			return err
 		}
 		switch st {
 		case qrSuccess:
-			fmt.Println("登录成功，已保存", cookieFile())
+			fmt.Printf("登录成功，账号 UID %s 已保存到 %s\n", mid, accountDir(mid))
+			fmt.Println("守护进程在运行的话，1 分钟内会自动接上这个账号。想再加一个账号，再运行一次 login。")
 			return nil
 		case qrExpired:
 			return errors.New("二维码已过期，请重新运行 login")
@@ -108,25 +108,58 @@ func cliLogin() error {
 	}
 }
 
+// cliRefresh 依次为每个账号跑一轮；有账号失败时返回错误
+func cliRefresh() error {
+	migrateLegacyCookies()
+	mids, err := listAccounts()
+	if err != nil {
+		return err
+	}
+	if len(mids) == 0 {
+		return errNoCookies
+	}
+	s := loadSettings()
+	failed := 0
+	for _, mid := range mids {
+		acc := newAccount(mid)
+		acc.run(s)
+		if !acc.status().Last.OK {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d 个账号失败", failed)
+	}
+	return nil
+}
+
 func daemon() {
+	migrateLegacyCookies()
 	a := newApp(logs)
 	s := a.settings()
-	log.Printf("bili-ip-anchor %s 守护模式启动：间隔 %s，随机抖动 %s，数据目录 %s",
-		version, s.Interval, s.Jitter, cfg.DataDir)
+	log.Printf("bili-ip-anchor %s 守护模式启动：间隔 %s，随机抖动 %s，数据目录 %s", version, s.Interval, s.Jitter, cfg.DataDir)
+	a.syncAccounts(true)
+	if n := a.accountCount(); n == 0 {
+		log.Printf("还没有账号：在 WebUI 里点「添加账号」，或运行 login 扫码")
+	} else {
+		log.Printf("已加载 %d 个账号，各自独立排程", n)
+	}
+	go a.syncLoop()
+	go a.zoneLoop()
 	if cfg.WebPassword != "" {
 		go a.serveWeb()
 	} else {
 		log.Printf("未设置 WEBUI_PASSWORD，WebUI 未启用")
 	}
-	a.loop()
+	select {}
 }
 
 const usage = `bili-ip-anchor %s
 
 用法：
-  bili-ip-anchor login            扫码登录，保存会话到数据目录
-  bili-ip-anchor refresh [--now]  跑一轮（不加 --now 会先随机等待 0~JITTER）
-  bili-ip-anchor daemon           常驻运行，按 INTERVAL 定时跑；设置了 WEBUI_PASSWORD 时同时提供 WebUI
+  bili-ip-anchor login            扫码登录一个账号（再运行一次可以添加更多账号）
+  bili-ip-anchor refresh [--now]  为所有账号各跑一轮（不加 --now 会先随机等待 0~JITTER）
+  bili-ip-anchor daemon           常驻运行，每个账号按 INTERVAL 独立定时；设置了 WEBUI_PASSWORD 时同时提供 WebUI
   bili-ip-anchor version          显示版本
 
 环境变量：DATA_DIR  BVID  DO_DYNAMIC  INTERVAL  JITTER  WEBUI_ADDR  WEBUI_PASSWORD  TZ（详见 README）
@@ -149,11 +182,10 @@ func main() {
 			log.Fatal(err)
 		}
 	case "refresh":
-		s := loadSettings()
 		if len(os.Args) < 3 || os.Args[2] != "--now" {
-			time.Sleep(jitter(time.Duration(s.Jitter)))
+			time.Sleep(jitter(time.Duration(loadSettings().Jitter)))
 		}
-		if _, err := refresh(s); err != nil {
+		if err := cliRefresh(); err != nil {
 			log.Fatal(err)
 		}
 	case "daemon":

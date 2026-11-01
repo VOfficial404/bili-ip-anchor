@@ -52,7 +52,7 @@ func TestPostImageDynamic(t *testing.T) {
 		return nil, nil
 	})
 
-	if err := postAndRemoveDynamic(c, "tok"); err != nil {
+	if err := postAndRemoveDynamic(c, "tok", t.Logf); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(uploaded, defaultDynamicImage) || len(uploaded) == 0 {

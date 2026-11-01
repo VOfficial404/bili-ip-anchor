@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
@@ -29,9 +28,18 @@ var (
 	errLoggedOut = errors.New("登录已失效，请重新扫码登录")
 )
 
+type logFunc func(format string, args ...any)
+
 type apiResp struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// profile 是账号的公开资料，只用来在面板和日志里显示
+type profile struct {
+	Mid   string `json:"mid"`
+	Uname string `json:"uname"`
+	Face  string `json:"face"`
 }
 
 type biliClient struct {
@@ -135,86 +143,60 @@ func (q *qrLogin) png() ([]byte, error) {
 	return code.PNG(), nil
 }
 
-// poll 查询一次扫码状态；成功时保存会话
-func (q *qrLogin) poll() (qrState, error) {
+// poll 查询一次扫码状态；成功时保存会话并返回账号 UID
+func (q *qrLogin) poll() (qrState, string, error) {
 	var poll struct {
 		Data struct {
 			Code int `json:"code"`
 		} `json:"data"`
 	}
 	if err := q.client.do("GET", "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key="+url.QueryEscape(q.key), nil, nil, &poll); err != nil {
-		return qrNone, err
+		return qrNone, "", err
 	}
 	switch poll.Data.Code {
 	case 0:
-		return qrSuccess, saveCookies(q.client.http.Jar)
+		mid, err := saveJarCookies(q.client.http.Jar)
+		return qrSuccess, mid, err
 	case 86090:
-		return qrScanned, nil
+		return qrScanned, "", nil
 	case 86038:
-		return qrExpired, nil
+		return qrExpired, "", nil
 	default:
-		return qrWaiting, nil
+		return qrWaiting, "", nil
 	}
 }
 
-func saveCookies(jar http.CookieJar) error {
+func saveJarCookies(jar http.CookieJar) (string, error) {
 	u, _ := url.Parse("https://api.bilibili.com/")
 	saved := map[string]string{}
 	for _, c := range jar.Cookies(u) {
 		saved[c.Name] = c.Value
 	}
-	if saved["SESSDATA"] == "" || saved["bili_jct"] == "" {
-		return errors.New("登录成功但没有拿到 SESSDATA/bili_jct，B 站接口可能已变化")
-	}
-	b, err := json.Marshal(saved)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
-		return err
-	}
-	return os.WriteFile(cookieFile(), b, 0600)
-}
-
-func loadCookies() (map[string]string, error) {
-	b, err := os.ReadFile(cookieFile())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, errNoCookies
-	}
-	if err != nil {
-		return nil, err
-	}
-	var cookies map[string]string
-	if err := json.Unmarshal(b, &cookies); err != nil {
-		return nil, fmt.Errorf("解析 %s 失败：%w", cookieFile(), err)
-	}
-	return cookies, nil
+	return saveAccountCookies(saved)
 }
 
 // refresh 以账号身份发一轮请求，让 B 站记录到本机的出口 IP。
-// 只要确认了登录状态就返回昵称，即使后续步骤失败。
-func refresh(s settings) (string, error) {
-	cookies, err := loadCookies()
-	if err != nil {
-		return "", err
-	}
+// 只要确认了登录状态就返回资料，即使后续步骤失败。
+func refresh(cookies map[string]string, s settings, logf logFunc) (profile, error) {
 	c := newClient(cookies)
 	csrf := cookies["bili_jct"]
 
 	var nav struct {
 		Data struct {
 			IsLogin bool   `json:"isLogin"`
+			Mid     int64  `json:"mid"`
 			Uname   string `json:"uname"`
+			Face    string `json:"face"`
 		} `json:"data"`
 	}
 	if err := c.do("GET", "https://api.bilibili.com/x/web-interface/nav", nil, nil, &nav); err != nil {
-		return "", err
+		return profile{}, err
 	}
 	if !nav.Data.IsLogin {
-		return "", errLoggedOut
+		return profile{}, errLoggedOut
 	}
-	uname := nav.Data.Uname
-	log.Printf("已登录：%s", uname)
+	p := profile{Mid: strconv.FormatInt(nav.Data.Mid, 10), Uname: nav.Data.Uname, Face: nav.Data.Face}
+	logf("登录正常：%s", p.Uname)
 
 	var hb apiResp
 	if err := c.do("POST", "https://api.bilibili.com/x/click-interface/web/heartbeat", url.Values{
@@ -222,17 +204,17 @@ func refresh(s settings) (string, error) {
 		"played_time": {strconv.Itoa(30 + rand.Intn(271))},
 		"csrf":        {csrf},
 	}, nil, &hb); err != nil {
-		return uname, err
+		return p, err
 	}
-	log.Printf("心跳：%d %s", hb.Code, hb.Message)
+	logf("心跳：%d %s", hb.Code, hb.Message)
 	if hb.Code != 0 {
-		return uname, fmt.Errorf("心跳被拒绝：%d %s", hb.Code, hb.Message)
+		return p, fmt.Errorf("心跳被拒绝：%d %s", hb.Code, hb.Message)
 	}
 
 	if s.DoDynamic {
-		return uname, postAndRemoveDynamic(c, csrf)
+		return p, postAndRemoveDynamic(c, csrf, logf)
 	}
-	return uname, nil
+	return p, nil
 }
 
 //go:embed assets/dynamic.jpg
@@ -294,7 +276,7 @@ func (c *biliClient) uploadImage(csrf, name string, data []byte) (uploadedPic, e
 // removeDelay 发动态后等多久再删；测试里会改成 0
 var removeDelay = func() time.Duration { return time.Duration(5+rand.Intn(16)) * time.Second }
 
-func postAndRemoveDynamic(c *biliClient, csrf string) error {
+func postAndRemoveDynamic(c *biliClient, csrf string, logf logFunc) error {
 	name, data, err := dynamicImage()
 	if err != nil {
 		return err
@@ -303,7 +285,7 @@ func postAndRemoveDynamic(c *biliClient, csrf string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("上传图片：%dx%d", pic.Width, pic.Height)
+	logf("上传图片：%dx%d", pic.Width, pic.Height)
 
 	var cr struct {
 		apiResp
@@ -326,7 +308,7 @@ func postAndRemoveDynamic(c *biliClient, csrf string) error {
 	}, &cr); err != nil {
 		return err
 	}
-	log.Printf("发动态：%d %s", cr.Code, cr.Message)
+	logf("发动态：%d %s", cr.Code, cr.Message)
 	if cr.Data.DynID == "" {
 		return fmt.Errorf("发动态失败：%d %s", cr.Code, cr.Message)
 	}
@@ -337,34 +319,22 @@ func postAndRemoveDynamic(c *biliClient, csrf string) error {
 		map[string]any{"dyn_id_str": cr.Data.DynID}, &rr); err != nil {
 		return err
 	}
-	log.Printf("删动态：%d %s", rr.Code, rr.Message)
+	logf("删动态：%d %s", rr.Code, rr.Message)
 	if rr.Code != 0 {
 		return fmt.Errorf("删动态失败，请手动删除动态 %s：%d %s", cr.Data.DynID, rr.Code, rr.Message)
 	}
 	return nil
 }
 
-// logout 让 B 站注销这份会话，并删除本地文件。远端注销失败也会删除本地文件。
-func logout() error {
-	cookies, err := loadCookies()
-	if errors.Is(err, errNoCookies) {
-		return nil
+// logout 让 B 站注销这份会话
+func logout(cookies map[string]string) error {
+	var r apiResp
+	if err := newClient(cookies).do("POST", "https://passport.bilibili.com/login/exit/v2",
+		url.Values{"biliCSRF": {cookies["bili_jct"]}}, nil, &r); err != nil {
+		return err
 	}
-	if err == nil {
-		var r apiResp
-		err = newClient(cookies).do("POST", "https://passport.bilibili.com/login/exit/v2",
-			url.Values{"biliCSRF": {cookies["bili_jct"]}}, nil, &r)
-		if err == nil && r.Code != 0 {
-			err = fmt.Errorf("%d %s", r.Code, r.Message)
-		}
-	}
-	if err != nil {
-		log.Printf("B 站注销会话失败（本地会话仍会删除）：%v", err)
-	} else {
-		log.Printf("已在 B 站注销这份会话")
-	}
-	if rmErr := os.Remove(cookieFile()); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-		return rmErr
+	if r.Code != 0 {
+		return fmt.Errorf("%d %s", r.Code, r.Message)
 	}
 	return nil
 }

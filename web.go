@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -31,11 +32,12 @@ func (a *app) serveWeb() {
 	mux.HandleFunc("POST /api/session", a.handleSessionCreate)
 	mux.HandleFunc("DELETE /api/session", a.auth(a.handleSessionDelete))
 	mux.HandleFunc("GET /api/status", a.auth(a.handleStatus))
-	mux.HandleFunc("POST /api/run", a.auth(a.handleRun))
+	mux.HandleFunc("POST /api/run", a.auth(a.handleRunAll))
+	mux.HandleFunc("POST /api/accounts/{mid}/run", a.auth(a.handleAccountRun))
+	mux.HandleFunc("DELETE /api/accounts/{mid}", a.auth(a.handleAccountDelete))
 	mux.HandleFunc("PUT /api/settings", a.auth(a.handleSettings))
 	mux.HandleFunc("POST /api/qr", a.auth(a.handleQRStart))
 	mux.HandleFunc("GET /api/qr", a.auth(a.handleQRPoll))
-	mux.HandleFunc("POST /api/bili-logout", a.auth(a.handleBiliLogout))
 
 	if len(cfg.WebPassword) < 8 {
 		log.Printf("警告：WEBUI_PASSWORD 少于 8 位，建议换一个更长的密码")
@@ -54,7 +56,7 @@ func securityHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: https://*.hdslb.com; style-src 'self'; script-src 'self'")
 		h.ServeHTTP(w, r)
 	})
 }
@@ -159,43 +161,40 @@ func (a *app) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-type statusResp struct {
-	Version   string     `json:"version"`
-	LoggedIn  bool       `json:"logged_in"`
-	Uname     string     `json:"uname"`
-	Running   bool       `json:"running"`
-	Last      *runResult `json:"last"`
-	Next      *time.Time `json:"next"`
-	Zone      *zoneInfo  `json:"zone"`
-	ZoneError string     `json:"zone_error,omitempty"`
-	Settings  settings   `json:"settings"`
-	Logs      []string   `json:"logs"`
-}
-
 func (a *app) handleStatus(w http.ResponseWriter, r *http.Request) {
-	a.mu.Lock()
-	resp := statusResp{
-		Version:   version,
-		LoggedIn:  a.loggedIn,
-		Uname:     a.uname,
-		Running:   a.running,
-		Last:      a.last,
-		Zone:      a.zone,
-		ZoneError: a.zoneErr,
-		Settings:  a.set,
-	}
-	if !a.next.IsZero() {
-		next := a.next
-		resp.Next = &next
-	}
-	a.mu.Unlock()
-	resp.Logs = a.logs.Lines()
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, a.status())
 }
 
-func (a *app) handleRun(w http.ResponseWriter, r *http.Request) {
-	if !a.runNow() {
-		writeErr(w, http.StatusConflict, "正在运行，等这一轮结束再试")
+func (a *app) handleRunAll(w http.ResponseWriter, r *http.Request) {
+	n := a.runAll()
+	if n == 0 {
+		writeErr(w, http.StatusConflict, "没有可以立即运行的账号，可能都在运行中")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"triggered": n})
+}
+
+func (a *app) handleAccountRun(w http.ResponseWriter, r *http.Request) {
+	acc := a.account(r.PathValue("mid"))
+	if acc == nil {
+		writeErr(w, http.StatusNotFound, errNoAccount.Error())
+		return
+	}
+	if !acc.runNow() {
+		writeErr(w, http.StatusConflict, "这个账号正在运行，等这一轮结束再试")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *app) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
+	err := a.removeAccount(r.PathValue("mid"))
+	if errors.Is(err, errNoAccount) {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -226,18 +225,10 @@ func (a *app) handleQRStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleQRPoll(w http.ResponseWriter, r *http.Request) {
-	st, err := a.pollQR()
+	st, mid, err := a.pollQR()
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]qrState{"state": st})
-}
-
-func (a *app) handleBiliLogout(w http.ResponseWriter, r *http.Request) {
-	if err := a.logoutBili(); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"state": st, "mid": mid})
 }

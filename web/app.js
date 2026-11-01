@@ -25,15 +25,25 @@ async function api(method, path, body) {
   return res;
 }
 
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
 /* 时间显示 */
+
+const pad = (n) => String(n).padStart(2, "0");
 
 function fmtTime(iso) {
   const d = new Date(iso);
-  const pad = (n) => String(n).padStart(2, "0");
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return sameDay ? `今天 ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  const today = new Date();
+  const tomorrow = new Date(today.getTime() + 86400000);
+  if (d.toDateString() === today.toDateString()) return `今天 ${hm}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `明天 ${hm}`;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
 function fmtRelative(iso) {
@@ -88,10 +98,57 @@ $("signout").addEventListener("click", async () => {
   showGate();
 });
 
-/* 状态渲染 */
+/* 主视觉：位置和邮戳 */
 
-let settingsDirty = false;
-let lastLogCount = -1;
+const SVG_NS = "http://www.w3.org/2000/svg";
+let stampWord = null;
+
+function svg(tag, attrs, text) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function renderStamp(word) {
+  if (word === stampWord) return;
+  const wasPending = !stampWord;
+  stampWord = word;
+
+  const chars = Array.from(word || "?");
+  const size = chars.length <= 2 ? 46 : chars.length === 3 ? 38 : chars.length <= 5 ? 27 : 20;
+  const d = new Date();
+  const date = `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())}`;
+
+  const root = svg("svg", { viewBox: "0 0 220 220" });
+  const filter = svg("filter", { id: "ink", x: "-5%", y: "-5%", width: "110%", height: "110%" });
+  filter.append(
+    svg("feTurbulence", { type: "fractalNoise", baseFrequency: "0.85", numOctaves: "2", seed: "7", result: "noise" }),
+    svg("feDisplacementMap", { in: "SourceGraphic", in2: "noise", scale: "2.2" }),
+  );
+  const defs = svg("defs");
+  defs.append(filter, svg("path", { id: "ring", d: "M 110 110 m -77 0 a 77 77 0 1 1 154 0 a 77 77 0 1 1 -154 0" }));
+
+  const g = svg("g", { filter: "url(#ink)", fill: "none", stroke: "currentColor" });
+  g.append(
+    svg("circle", { cx: 110, cy: 110, r: 103, "stroke-width": 4 }),
+    svg("circle", { cx: 110, cy: 110, r: 94, "stroke-width": 1.4 }),
+    svg("circle", { cx: 110, cy: 110, r: 62, "stroke-width": 1.4 }),
+  );
+  const ring = svg("text", { class: "ring-text", fill: "currentColor", stroke: "none" });
+  ring.append(svg("textPath", { href: "#ring", textLength: 466, lengthAdjust: "spacing" }, `BILIBILI IP ANCHOR ★ ${date} ★`));
+  g.append(
+    ring,
+    svg("text", { class: "word", x: 110, y: 106, "font-size": size, fill: "currentColor", stroke: "none", "text-anchor": "middle", "dominant-baseline": "central" }, word || "?"),
+    svg("text", { class: "sub", x: 112, y: 148, fill: "currentColor", stroke: "none", "text-anchor": "middle" }, "IP 属地"),
+  );
+  root.append(defs, g);
+
+  const box = $("stamp");
+  box.replaceChildren(root);
+  box.classList.toggle("is-pending", !word);
+  box.classList.toggle("is-new", Boolean(word) && wasPending);
+}
 
 function renderZone(s) {
   const place = $("place");
@@ -99,65 +156,190 @@ function renderZone(s) {
   meta.replaceChildren();
   const z = s.zone;
   if (!z) {
-    place.textContent = s.zone_error ? "查不到" : "查询中";
+    place.textContent = s.zone_error ? "暂时查不到" : "查询中";
     place.classList.add("is-pending");
-    if (s.zone_error) meta.append(span(`查询失败：${s.zone_error}`, "error"));
+    if (s.zone_error) meta.append(el("span", "error small", `查询失败：${s.zone_error}`));
+    renderStamp("");
     return;
   }
   place.classList.remove("is-pending");
   const domestic = z.country === "中国";
   const parts = domestic ? [z.province, z.city] : [z.country, z.province];
   place.textContent = [...new Set(parts.filter(Boolean))].join(" ") || "未知地区";
-  if (z.isp) meta.append(span(z.isp));
+  if (z.isp) meta.append(el("span", "tag", z.isp));
   if (z.addr) {
-    const code = document.createElement("code");
-    code.textContent = z.addr;
-    meta.append(code);
+    const tag = el("span", "tag");
+    tag.append(el("code", null, z.addr));
+    meta.append(tag);
+  }
+  renderStamp((domestic ? z.province : z.country) || "");
+}
+
+/* 账号列表 */
+
+const rows = new Map();
+
+function faceURL(face) {
+  if (!/^(https?:)?\/\/[a-z0-9.-]+\.hdslb\.com\//i.test(face)) return "";
+  return face.replace(/^(https?:)?\/\//, "https://") + "@96w_96h_1c.webp";
+}
+
+function accountState(a) {
+  if (a.running) return ["running", "运行中"];
+  if (!a.logged_in) return ["bad", "登录失效"];
+  if (!a.last) return ["idle", "等待首次运行"];
+  return a.last.ok ? ["ok", "正常"] : ["warn", "上次失败"];
+}
+
+function buildRow(mid) {
+  const img = el("img");
+  img.alt = "";
+  img.hidden = true;
+  img.referrerPolicy = "no-referrer";
+  const initial = el("span", "initial");
+  img.addEventListener("load", () => { img.hidden = false; initial.hidden = true; });
+  img.addEventListener("error", () => { img.hidden = true; initial.hidden = false; });
+  const avatar = el("span", "avatar");
+  avatar.append(img, initial);
+
+  const name = el("span", "acc-name");
+  const pill = el("span", "pill");
+  const nameLine = el("div", "acc-name-line");
+  nameLine.append(name, pill);
+  const who = el("div", "acc-who");
+  const uid = el("div", "acc-uid", `UID ${mid}`);
+  who.append(nameLine, uid);
+  const id = el("div", "acc-id");
+  id.append(avatar, who);
+
+  const last = el("dd");
+  const next = el("dd");
+  const times = el("dl", "acc-times");
+  times.append(el("dt", null, "上次运行"), last, el("dt", null, "下次运行"), next);
+
+  const relogin = el("button", "primary", "重新扫码");
+  const run = el("button", "secondary", "立即运行");
+  const remove = el("button", "link danger", "退出");
+  for (const b of [relogin, run, remove]) b.type = "button";
+  const actions = el("div", "acc-actions");
+  actions.append(relogin, run, remove);
+
+  const err = el("p", "acc-error");
+  const li = el("li", "acc");
+  li.append(id, times, actions, err);
+
+  const row = { el: li, img, initial, name, uid, pill, last, next, relogin, run, remove, err, face: null, label: "" };
+  relogin.addEventListener("click", openQR);
+  run.addEventListener("click", () => runAccount(mid, row));
+  remove.addEventListener("click", () => removeAccount(mid, row));
+  return row;
+}
+
+function updateRow(row, a) {
+  row.label = a.uname || `UID ${a.mid}`;
+  row.name.textContent = row.label;
+  row.name.title = row.label;
+  row.uid.hidden = !a.uname;
+  row.initial.textContent = a.uname ? Array.from(a.uname)[0] : "B";
+
+  const face = faceURL(a.face || "");
+  if (face !== row.face) {
+    row.face = face;
+    row.img.hidden = true;
+    row.initial.hidden = false;
+    if (face) row.img.src = face;
+    else row.img.removeAttribute("src");
+  }
+
+  const [state, text] = accountState(a);
+  row.pill.dataset.state = state;
+  row.pill.textContent = text;
+
+  row.last.replaceChildren();
+  if (a.last) row.last.append(`${fmtTime(a.last.at)} `, el("span", a.last.ok ? "ok" : "bad", a.last.ok ? "成功" : "失败"));
+  else row.last.textContent = "还没有";
+  row.next.textContent = a.running ? "正在运行" : a.next ? `${fmtTime(a.next)}（${fmtRelative(a.next)}）` : "—";
+
+  if (!a.logged_in) row.err.textContent = "这个账号的会话已失效，点「重新扫码」用同一个账号登录即可恢复。";
+  else row.err.textContent = a.last && !a.last.ok ? a.last.error || "" : "";
+
+  row.relogin.hidden = a.logged_in;
+  row.run.hidden = !a.logged_in;
+  row.run.disabled = a.running;
+  row.run.textContent = a.running ? "运行中" : "立即运行";
+}
+
+function renderAccounts(list) {
+  const ul = $("accounts");
+  const seen = new Set();
+  list.forEach((a, i) => {
+    seen.add(a.mid);
+    let row = rows.get(a.mid);
+    if (!row) {
+      row = buildRow(a.mid);
+      rows.set(a.mid, row);
+    }
+    if (ul.children[i] !== row.el) ul.insertBefore(row.el, ul.children[i] || null);
+    updateRow(row, a);
+  });
+  for (const [mid, row] of rows) {
+    if (!seen.has(mid)) {
+      row.el.remove();
+      rows.delete(mid);
+    }
+  }
+
+  const empty = list.length === 0;
+  ul.hidden = empty;
+  $("accounts-empty").hidden = !empty;
+  $("run-all").hidden = empty;
+  $("run-all").disabled = list.every((a) => a.running || !a.logged_in);
+
+  const bad = list.filter((a) => !a.logged_in).length;
+  $("acc-summary").textContent = empty
+    ? "可以添加多个账号，每个账号各自排程。"
+    : `${list.length} 个账号，各自排程、同时进行${bad ? `；${bad} 个需要重新扫码` : ""}`;
+}
+
+async function runAccount(mid, row) {
+  row.run.disabled = true;
+  try {
+    await api("POST", `/api/accounts/${mid}/run`);
+    setTimeout(refresh, 600);
+  } catch (err) {
+    if (err instanceof Unauthorized) return;
+    row.err.textContent = err.message;
+    row.run.disabled = false;
   }
 }
 
-function span(text, cls) {
-  const el = document.createElement("span");
-  el.textContent = text;
-  if (cls) el.className = cls;
-  return el;
-}
-
-function renderAccount(s) {
-  const acc = $("account");
-  acc.replaceChildren();
-  if (s.logged_in) {
-    acc.append(span(s.uname || "已登录", "state-ok"));
-    $("qr-open").textContent = "重新扫码";
-    $("qr-open").className = "secondary";
-    $("bili-logout").hidden = false;
-  } else {
-    acc.append(span("未登录", "state-bad"));
-    $("qr-open").textContent = "扫码登录";
-    $("qr-open").className = "primary";
-    $("bili-logout").hidden = true;
+async function removeAccount(mid, row) {
+  if (!confirm(`退出「${row.label}」？\n服务器上的这份会话会在 B 站注销并删除，之后不再为这个账号运行。`)) return;
+  row.remove.disabled = true;
+  try {
+    await api("DELETE", `/api/accounts/${mid}`);
+    refresh();
+  } catch (err) {
+    if (err instanceof Unauthorized) return;
+    $("acc-error").textContent = err.message;
+    row.remove.disabled = false;
   }
 }
 
-function renderRun(s) {
-  const last = $("last");
-  last.replaceChildren();
-  $("last-error").textContent = "";
-  if (s.running) {
-    last.append(span("正在运行"));
-  } else if (!s.last) {
-    last.append(span("还没有运行过", "muted"));
-  } else {
-    last.append(span(fmtTime(s.last.at)), " ");
-    last.append(s.last.ok ? span("成功", "state-ok") : span("失败", "state-bad"));
-    if (s.last.error) $("last-error").textContent = s.last.error;
+$("run-all").addEventListener("click", async () => {
+  $("run-all").disabled = true;
+  $("acc-error").textContent = "";
+  try {
+    await api("POST", "/api/run");
+    setTimeout(refresh, 600);
+  } catch (err) {
+    if (!(err instanceof Unauthorized)) $("acc-error").textContent = err.message;
   }
-  const btn = $("run");
-  btn.disabled = s.running;
-  btn.textContent = s.running ? "运行中" : "立即运行";
+});
 
-  $("next").textContent = s.running || !s.next ? "—" : `${fmtTime(s.next)}（${fmtRelative(s.next)}）`;
-}
+/* 设置 */
+
+let settingsDirty = false;
 
 function renderSettings(st) {
   if (settingsDirty) return;
@@ -166,52 +348,6 @@ function renderSettings(st) {
   $("bvid").value = st.bvid;
   $("dynamic").checked = st.do_dynamic;
 }
-
-function renderLogs(lines) {
-  if (lines.length === lastLogCount && lines.length < 300) return;
-  lastLogCount = lines.length;
-  const box = $("log");
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
-  box.textContent = lines.join("\n");
-  if (atBottom) box.scrollTop = box.scrollHeight;
-}
-
-async function refresh() {
-  try {
-    const s = await (await api("GET", "/api/status")).json();
-    renderZone(s);
-    renderAccount(s);
-    renderRun(s);
-    renderSettings(s.settings);
-    renderLogs(s.logs || []);
-    $("version").textContent = s.version;
-  } catch (err) {
-    if (!(err instanceof Unauthorized)) $("last-error").textContent = `连不上服务：${err.message}`;
-  }
-}
-
-/* 操作 */
-
-$("run").addEventListener("click", async () => {
-  $("run").disabled = true;
-  try {
-    await api("POST", "/api/run");
-    setTimeout(refresh, 600);
-  } catch (err) {
-    $("last-error").textContent = err.message;
-    $("run").disabled = false;
-  }
-});
-
-$("bili-logout").addEventListener("click", async () => {
-  if (!confirm("退出后服务器上的会话会被注销并删除，需要重新扫码才能继续。确定退出？")) return;
-  try {
-    await api("POST", "/api/bili-logout");
-    refresh();
-  } catch (err) {
-    if (!(err instanceof Unauthorized)) alert(err.message);
-  }
-});
 
 $("settings").addEventListener("input", () => {
   settingsDirty = true;
@@ -239,13 +375,62 @@ $("settings").addEventListener("submit", async (e) => {
   }
 });
 
-/* 扫码登录 */
+/* 日志 */
+
+let logSig = "";
+
+function renderLogs(lines) {
+  const sig = `${lines.length}|${lines[lines.length - 1] || ""}`;
+  if (sig === logSig) return;
+  logSig = sig;
+  const box = $("log");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+  const frag = document.createDocumentFragment();
+  for (const line of lines) {
+    const row = el("span", /失败|失效|错误/.test(line) ? "is-bad" : null);
+    const m = /^\d{4}\/(\d\d\/\d\d \d\d:\d\d:\d\d) (?:(\[[^\]]*\]) )?(.*)$/.exec(line);
+    if (m) {
+      row.append(el("span", "t", `${m[1]} `));
+      if (m[2]) row.append(el("span", "who", `${m[2]} `));
+      row.append(m[3]);
+    } else {
+      row.append(line);
+    }
+    frag.append(row, "\n");
+  }
+  box.replaceChildren(frag);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+/* 轮询状态 */
+
+async function refresh() {
+  const accErr = $("acc-error");
+  try {
+    const s = await (await api("GET", "/api/status")).json();
+    renderZone(s);
+    renderAccounts(s.accounts || []);
+    renderSettings(s.settings);
+    renderLogs(s.logs || []);
+    $("version").textContent = s.version;
+    if (accErr.dataset.conn) {
+      accErr.textContent = "";
+      delete accErr.dataset.conn;
+    }
+  } catch (err) {
+    if (err instanceof Unauthorized) return;
+    accErr.textContent = `连不上服务：${err.message}`;
+    accErr.dataset.conn = "1";
+  }
+}
+
+/* 扫码添加账号 */
 
 const QR_TEXT = {
   waiting: "用 B 站 App 扫一扫",
   scanned: "已扫码，请在手机上确认登录",
   expired: "二维码已过期",
-  success: "登录成功",
+  success: "登录成功，已添加这个账号",
 };
 
 let qrPoll = null;
@@ -256,23 +441,28 @@ function stopQR() {
   qrPoll = null;
 }
 
+function setQRState(text, ok) {
+  $("qr-state").textContent = text;
+  $("qr-state").classList.toggle("is-ok", Boolean(ok));
+}
+
 async function startQR() {
   stopQR();
   const frame = document.querySelector(".qr-frame");
   frame.classList.add("is-dim");
   $("qr-renew").hidden = true;
-  $("qr-state").textContent = "正在获取二维码";
+  setQRState("正在获取二维码");
   try {
     const blob = await (await api("POST", "/api/qr")).blob();
     if (qrURL) URL.revokeObjectURL(qrURL);
     qrURL = URL.createObjectURL(blob);
     $("qr-img").src = qrURL;
     frame.classList.remove("is-dim");
-    $("qr-state").textContent = QR_TEXT.waiting;
+    setQRState(QR_TEXT.waiting);
     qrPoll = setInterval(pollQR, 2000);
   } catch (err) {
     if (err instanceof Unauthorized) { $("qr").close(); return; }
-    $("qr-state").textContent = err.message;
+    setQRState(err.message);
     $("qr-renew").hidden = false;
   }
 }
@@ -280,7 +470,7 @@ async function startQR() {
 async function pollQR() {
   try {
     const { state } = await (await api("GET", "/api/qr")).json();
-    if (QR_TEXT[state]) $("qr-state").textContent = QR_TEXT[state];
+    if (QR_TEXT[state]) setQRState(QR_TEXT[state], state === "success");
     if (state === "expired" || state === "none") {
       stopQR();
       document.querySelector(".qr-frame").classList.add("is-dim");
@@ -288,20 +478,24 @@ async function pollQR() {
     }
     if (state === "success") {
       stopQR();
-      setTimeout(() => { $("qr").close(); refresh(); }, 900);
+      refresh();
+      setTimeout(() => $("qr").close(), 1200);
     }
   } catch (err) {
     stopQR();
     if (err instanceof Unauthorized) { $("qr").close(); return; }
-    $("qr-state").textContent = err.message;
+    setQRState(err.message);
     $("qr-renew").hidden = false;
   }
 }
 
-$("qr-open").addEventListener("click", () => {
+function openQR() {
   $("qr").showModal();
   startQR();
-});
+}
+
+$("qr-open").addEventListener("click", openQR);
+$("qr-open-empty").addEventListener("click", openQR);
 $("qr-renew").addEventListener("click", startQR);
 $("qr-close").addEventListener("click", () => $("qr").close());
 $("qr").addEventListener("close", stopQR);

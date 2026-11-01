@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -129,33 +130,26 @@ type runResult struct {
 	Error string    `json:"error,omitempty"`
 }
 
+var errNoAccount = errors.New("找不到这个账号")
+
 type app struct {
 	mu       sync.Mutex
 	set      settings
-	running  bool
-	last     *runResult
-	next     time.Time
-	loggedIn bool
-	uname    string
+	accounts map[string]*account
 	zone     *zoneInfo
 	zoneErr  string
 	qr       *qrLogin
 	sessions map[string]time.Time
 
-	logs    *ringLog
-	trigger chan struct{}
-	resched chan struct{}
+	logs *ringLog
 }
 
 func newApp(logs *ringLog) *app {
-	_, err := loadCookies()
 	return &app{
 		set:      loadSettings(),
-		loggedIn: err == nil, // 第一轮跑完前的猜测
+		accounts: map[string]*account{},
 		sessions: map[string]time.Time{},
 		logs:     logs,
-		trigger:  make(chan struct{}, 1),
-		resched:  make(chan struct{}, 1),
 	}
 }
 
@@ -165,91 +159,145 @@ func (a *app) settings() settings {
 	return a.set
 }
 
-func (a *app) runOnce() {
-	a.mu.Lock()
-	a.running = true
-	s := a.set
-	a.mu.Unlock()
-
-	uname, err := refresh(s)
-	zone, zoneErr := fetchZone()
-
+func (a *app) account(mid string) *account {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.running = false
-	a.last = &runResult{At: time.Now(), OK: err == nil}
-	switch {
-	case errors.Is(err, errNoCookies), errors.Is(err, errLoggedOut):
-		a.loggedIn, a.uname = false, ""
-	case uname != "":
-		a.loggedIn, a.uname = true, uname
-	}
-	if err != nil {
-		a.last.Error = err.Error()
-		log.Printf("本轮失败：%v", err)
-	}
-	if zoneErr != nil {
-		a.zoneErr = zoneErr.Error()
-		log.Printf("查询出口 IP 归属失败：%v", zoneErr)
-	} else {
-		a.zone, a.zoneErr = &zone, ""
-	}
+	return a.accounts[mid]
 }
 
-func (a *app) scheduleFrom(base time.Time) {
+func (a *app) accountCount() int {
 	a.mu.Lock()
-	s := a.set
-	a.next = base.Add(time.Duration(s.Interval) + jitter(time.Duration(s.Jitter)))
-	next := a.next
-	a.mu.Unlock()
-	log.Printf("下一轮：%s", next.Format("2006-01-02 15:04:05"))
+	defer a.mu.Unlock()
+	return len(a.accounts)
 }
 
-// loop 启动时先跑一轮，之后按 next 定时跑；失败只记日志不退出
-func (a *app) loop() {
-	for {
-		a.runOnce()
-		a.scheduleFrom(time.Now())
-	wait:
-		for {
-			a.mu.Lock()
-			t := time.NewTimer(time.Until(a.next))
-			a.mu.Unlock()
-			select {
-			case <-t.C:
-				break wait
-			case <-a.trigger:
-				t.Stop()
-				log.Printf("手动触发运行")
-				break wait
-			case <-a.resched:
-				t.Stop()
-				a.mu.Lock()
-				base := time.Now()
-				if a.last != nil {
-					base = a.last.At
-				}
-				a.mu.Unlock()
-				a.scheduleFrom(base)
-			}
+func (a *app) startAccountLocked(mid string, first time.Duration) {
+	acc := newAccount(mid)
+	a.accounts[mid] = acc
+	go acc.loop(a.settings, first)
+}
+
+// syncAccounts 让运行中的账号和 accounts/ 目录保持一致：
+// 命令行 login 新加的账号会被接上，会话文件被删掉的账号会停下。
+// stagger 为 true 时（启动时）各账号的第一轮错开十几秒。
+func (a *app) syncAccounts(stagger bool) {
+	mids, err := listAccounts()
+	if err != nil {
+		log.Printf("读取账号目录失败：%v", err)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	listed := map[string]bool{}
+	for i, mid := range mids {
+		listed[mid] = true
+		if _, ok := a.accounts[mid]; ok || !hasCookies(mid) {
+			continue
+		}
+		var first time.Duration
+		if stagger && i > 0 {
+			first = time.Duration(i)*15*time.Second + jitter(10*time.Second)
+		}
+		a.startAccountLocked(mid, first)
+		if !stagger {
+			log.Printf("发现新账号 UID %s", mid)
+		}
+	}
+	for mid, acc := range a.accounts {
+		if !listed[mid] && !hasCookies(mid) {
+			close(acc.stop)
+			delete(a.accounts, mid)
+			log.Printf("账号 UID %s 的会话文件已不在，停止运行", mid)
 		}
 	}
 }
 
-// runNow 请求立即跑一轮；已经在跑或已排队时返回 false
-func (a *app) runNow() bool {
+func (a *app) syncLoop() {
+	for {
+		time.Sleep(time.Minute)
+		a.syncAccounts(false)
+	}
+}
+
+// zoneLoop 定时查询 B 站把服务器出口 IP 识别为哪里
+func (a *app) zoneLoop() {
+	for {
+		zone, err := fetchZone()
+		a.mu.Lock()
+		if err != nil {
+			a.zoneErr = err.Error()
+		} else {
+			a.zone, a.zoneErr = &zone, ""
+		}
+		a.mu.Unlock()
+		if err != nil {
+			log.Printf("查询出口 IP 归属失败：%v", err)
+			time.Sleep(5 * time.Minute)
+			continue
+		}
+		time.Sleep(30 * time.Minute)
+	}
+}
+
+// accountLoggedIn 在扫码成功后调用：新账号开始排程，已有账号立即跑一轮
+func (a *app) accountLoggedIn(mid string) {
 	a.mu.Lock()
-	running := a.running
+	acc, ok := a.accounts[mid]
+	if !ok {
+		a.startAccountLocked(mid, 0)
+	}
 	a.mu.Unlock()
-	if running {
-		return false
+	if ok {
+		acc.mu.Lock()
+		acc.loggedIn = true
+		acc.mu.Unlock()
+		acc.runNow()
 	}
-	select {
-	case a.trigger <- struct{}{}:
-		return true
-	default:
-		return false
+}
+
+// removeAccount 让 B 站注销会话，删除本地目录并停止排程。远端注销失败也会删除本地目录。
+func (a *app) removeAccount(mid string) error {
+	acc := a.account(mid)
+	if acc == nil {
+		return errNoAccount
 	}
+	name := acc.name()
+	if cookies, err := loadAccountCookies(mid); err == nil {
+		if err := logout(cookies); err != nil {
+			acc.logf("B 站注销会话失败（本地会话仍会删除）：%v", err)
+		} else {
+			acc.logf("已在 B 站注销这份会话")
+		}
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := os.RemoveAll(accountDir(mid)); err != nil {
+		return err
+	}
+	if cur, ok := a.accounts[mid]; ok && cur == acc {
+		close(acc.stop)
+		delete(a.accounts, mid)
+	}
+	log.Printf("已移除账号 %s", name)
+	return nil
+}
+
+// runAll 让所有空闲账号立即跑一轮，返回实际触发的数量
+func (a *app) runAll() int {
+	a.mu.Lock()
+	accs := make([]*account, 0, len(a.accounts))
+	for _, acc := range a.accounts {
+		accs = append(accs, acc)
+	}
+	a.mu.Unlock()
+	n := 0
+	for _, acc := range accs {
+		if acc.runNow() {
+			n++
+		}
+	}
+	return n
 }
 
 func (a *app) updateSettings(s settings) error {
@@ -261,13 +309,11 @@ func (a *app) updateSettings(s settings) error {
 	}
 	a.mu.Lock()
 	a.set = s
-	a.mu.Unlock()
-	log.Printf("设置已更新：间隔 %s，随机抖动 %s，视频 %s，发动态 %v",
-		s.Interval, s.Jitter, s.BVID, s.DoDynamic)
-	select {
-	case a.resched <- struct{}{}:
-	default:
+	for _, acc := range a.accounts {
+		acc.reschedule()
 	}
+	a.mu.Unlock()
+	log.Printf("设置已更新：间隔 %s，随机抖动 %s，视频 %s，发动态 %v", s.Interval, s.Jitter, s.BVID, s.DoDynamic)
 	return nil
 }
 
@@ -286,17 +332,14 @@ func (a *app) startQR() ([]byte, error) {
 	return png, nil
 }
 
-func (a *app) pollQR() (qrState, error) {
+func (a *app) pollQR() (qrState, string, error) {
 	a.mu.Lock()
 	q := a.qr
 	a.mu.Unlock()
 	if q == nil {
-		return qrNone, nil
+		return qrNone, "", nil
 	}
-	st, err := q.poll()
-	if err != nil {
-		return st, err
-	}
+	st, mid, err := q.poll()
 	if st == qrSuccess || st == qrExpired {
 		a.mu.Lock()
 		if a.qr == q {
@@ -304,20 +347,46 @@ func (a *app) pollQR() (qrState, error) {
 		}
 		a.mu.Unlock()
 	}
-	if st == qrSuccess {
-		log.Printf("网页扫码登录成功")
-		a.mu.Lock()
-		a.loggedIn = true
-		a.mu.Unlock()
-		a.runNow()
+	if err != nil {
+		return st, "", err
 	}
-	return st, nil
+	if st == qrSuccess {
+		log.Printf("网页扫码登录成功：UID %s", mid)
+		a.accountLoggedIn(mid)
+	}
+	return st, mid, nil
 }
 
-func (a *app) logoutBili() error {
-	err := logout()
+type statusResp struct {
+	Version   string          `json:"version"`
+	Accounts  []accountStatus `json:"accounts"`
+	Zone      *zoneInfo       `json:"zone"`
+	ZoneError string          `json:"zone_error,omitempty"`
+	Settings  settings        `json:"settings"`
+	Logs      []string        `json:"logs"`
+}
+
+func (a *app) status() statusResp {
 	a.mu.Lock()
-	a.loggedIn, a.uname = false, ""
+	resp := statusResp{Version: version, Zone: a.zone, ZoneError: a.zoneErr, Settings: a.set}
+	accs := make([]*account, 0, len(a.accounts))
+	for _, acc := range a.accounts {
+		accs = append(accs, acc)
+	}
 	a.mu.Unlock()
-	return err
+
+	// UID 按数值排序
+	sort.Slice(accs, func(i, j int) bool {
+		x, y := accs[i].mid, accs[j].mid
+		if len(x) != len(y) {
+			return len(x) < len(y)
+		}
+		return x < y
+	})
+	resp.Accounts = make([]accountStatus, 0, len(accs))
+	for _, acc := range accs {
+		resp.Accounts = append(resp.Accounts, acc.status())
+	}
+	resp.Logs = a.logs.Lines()
+	return resp
 }
