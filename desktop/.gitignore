@@ -1,0 +1,5 @@
+/build/
+/.mygo/
+mygo_windows_*.syso
+/bili-ip-anchor-desktop
+/bili-ip-anchor-desktop.exe

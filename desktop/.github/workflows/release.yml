@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-latest, platform: "darwin/universal" }
+          # MyGo 不需要 cgo，Windows 版在 Ubuntu 上交叉编译，用 NSIS 打安装包
+          - { name: Windows, os: ubuntu-latest, platform: "windows/amd64,windows/arm64" }
+          - { name: Linux, os: ubuntu-latest, platform: "linux/amd64,linux/arm64" }
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check the version matches the tag
+        shell: bash
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' mygo.json)"
+          if [ "$want" != "$have" ]; then
+            echo "mygo.json 的 version 是 $have，标签是 $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - name: Install NSIS
+        if: matrix.name == 'Windows'
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
+      - name: Build
+        run: go tool mygo build -platform "${{ matrix.platform }}"
+
+      - name: Zip the portable Windows apps
+        if: matrix.name == 'Windows'
+        shell: bash
+        run: |
+          for dir in build/windows-*; do
+            arch="${dir#build/windows-}"
+            (cd "$dir" && zip -qr "../bili-ip-anchor-desktop-${GITHUB_REF_NAME#v}-windows-${arch}-portable.zip" "Bili IP Anchor.exe" icon.png)
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            build/*/*.dmg
+            build/*/*-setup-*.exe
+            build/*-portable.zip
+            build/*/*.deb
+            build/*/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir out
+          find dist -type f \( -name '*.dmg' -o -name '*-setup-*.exe' -o -name '*-portable.zip' -o -name '*.deb' -o -name '*.tar.gz' \) -exec cp {} out/ \;
+          cd out && sha256sum * > checksums.txt && ls -l
+          gh release create "$GITHUB_REF_NAME" * \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
