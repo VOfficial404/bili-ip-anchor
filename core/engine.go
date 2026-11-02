@@ -68,18 +68,19 @@ type Engine struct {
 	log  *log.Logger
 	logs *ringLog
 
-	mu         sync.Mutex
-	set        Settings
-	accounts   map[string]*account
-	zone       *zoneInfo
-	zoneErr    string
-	zoneAt     time.Time
-	qr         *QRLogin
-	tvqr       map[string]*tvLogin // 正在授权的账号
-	sessions   map[string]time.Time
-	autoTokens map[string]time.Time
-	videos     map[string]videoCache
-	transports map[string]*http.Transport
+	mu            sync.Mutex
+	set           Settings
+	accounts      map[string]*account
+	zone          *zoneInfo
+	zoneErr       string
+	zoneAt        time.Time
+	qr            *QRLogin
+	tvqr          map[string]*tvLogin // 正在授权的账号
+	sessions      map[string]time.Time
+	autoTokens    map[string]time.Time
+	videos        map[string]videoCache
+	transports    map[string]*http.Transport
+	testTransport http.RoundTripper // 不为 nil 时代替真实网络，给测试和演示用
 
 	zoneKick chan struct{}
 	stop     chan struct{}

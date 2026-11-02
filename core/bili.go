@@ -50,7 +50,7 @@ func (e *Engine) transport(proxy string) *http.Transport {
 
 // client 返回以账号身份请求 B 站的客户端，按当前设置走代理
 func (e *Engine) client(cookies map[string]string) *biliClient {
-	return newClient(e.transport(e.Settings().Proxy), cookies)
+	return newClient(e.roundTripper(e.Settings().Proxy), cookies)
 }
 
 // anonClient 不带账号，用于查询出口 IP、视频信息等
@@ -307,9 +307,16 @@ func (e *Engine) TestProxy(proxy string) (zoneInfo, error) {
 	if _, err := ParseProxy(proxy); err != nil {
 		return zoneInfo{}, err
 	}
-	z, err := fetchZone(newClient(e.transport(strings.TrimSpace(proxy)), nil))
+	z, err := fetchZone(newClient(e.roundTripper(strings.TrimSpace(proxy)), nil))
 	if err != nil {
 		return z, fmt.Errorf("经过代理访问 B 站失败：%w", err)
 	}
 	return z, nil
+}
+
+func (e *Engine) roundTripper(proxy string) http.RoundTripper {
+	if e.testTransport != nil {
+		return e.testTransport
+	}
+	return e.transport(proxy)
 }
