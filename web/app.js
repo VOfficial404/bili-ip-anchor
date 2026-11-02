@@ -32,6 +32,23 @@ function el(tag, cls, text) {
   return e;
 }
 
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "icon");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+function toast(msg) {
+  const t = el("div", "toast", msg);
+  t.setAttribute("role", "status");
+  $("toasts").append(t);
+  while ($("toasts").children.length > 3) $("toasts").firstChild.remove();
+  setTimeout(() => t.remove(), 4000);
+}
+
 /* 时间显示 */
 
 const pad = (n) => String(n).padStart(2, "0");
@@ -40,9 +57,11 @@ function fmtTime(iso) {
   const d = new Date(iso);
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const today = new Date();
-  const tomorrow = new Date(today.getTime() + 86400000);
-  if (d.toDateString() === today.toDateString()) return `今天 ${hm}`;
-  if (d.toDateString() === tomorrow.toDateString()) return `明天 ${hm}`;
+  today.setHours(0, 0, 0, 0);
+  const day = (d - today) / 86400000;
+  if (day >= 0 && day < 1) return `今天 ${hm}`;
+  if (day >= 1 && day < 2) return `明天 ${hm}`;
+  if (day < 0 && day >= -1) return `昨天 ${hm}`;
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
@@ -62,13 +81,33 @@ function fmtRelative(iso) {
 
 /* 页面切换 */
 
+const PAGES = { overview: "概览", accounts: "账号", settings: "设置", logs: "日志" };
 let timer = null;
+
+function currentPage() {
+  const p = location.hash.slice(1);
+  return PAGES[p] ? p : "overview";
+}
+
+function showPage() {
+  const page = currentPage();
+  $("page-title").textContent = PAGES[page];
+  document.title = `${PAGES[page]} · Bili IP Anchor`;
+  for (const a of document.querySelectorAll(".nav a")) {
+    if (a.dataset.page === page) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+  for (const s of document.querySelectorAll(".page")) s.classList.toggle("is-active", s.dataset.page === page);
+  $("page-actions").hidden = page !== "overview" && page !== "accounts";
+  if (page === "logs") scrollLogToEnd();
+}
+
+window.addEventListener("hashchange", showPage);
 
 function showGate() {
   clearInterval(timer);
   timer = null;
   $("panel").hidden = true;
-  $("signout").hidden = true;
   $("gate").hidden = false;
   $("password").focus();
 }
@@ -76,7 +115,7 @@ function showGate() {
 function showPanel() {
   $("gate").hidden = true;
   $("panel").hidden = false;
-  $("signout").hidden = false;
+  showPage();
   refresh();
   if (!timer) timer = setInterval(refresh, 5000);
 }
@@ -89,7 +128,7 @@ $("gate-form").addEventListener("submit", async (e) => {
     $("password").value = "";
     showPanel();
   } catch (err) {
-    $("gate-error").textContent = err.message;
+    $("gate-error").textContent = err.message === "密码不对" ? "面板密码不对" : err.message;
   }
 });
 
@@ -98,86 +137,67 @@ $("signout").addEventListener("click", async () => {
   showGate();
 });
 
-/* 主视觉：位置和邮戳 */
+/* 概览 */
 
-const SVG_NS = "http://www.w3.org/2000/svg";
-let stampWord = null;
-
-function svg(tag, attrs, text) {
-  const e = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
-  if (text != null) e.textContent = text;
-  return e;
-}
-
-function renderStamp(word) {
-  if (word === stampWord) return;
-  const wasPending = !stampWord;
-  stampWord = word;
-
-  const chars = Array.from(word || "?");
-  const size = chars.length <= 2 ? 46 : chars.length === 3 ? 38 : chars.length <= 5 ? 27 : 20;
-  const d = new Date();
-  const date = `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())}`;
-
-  const root = svg("svg", { viewBox: "0 0 220 220" });
-  const filter = svg("filter", { id: "ink", x: "-5%", y: "-5%", width: "110%", height: "110%" });
-  filter.append(
-    svg("feTurbulence", { type: "fractalNoise", baseFrequency: "0.85", numOctaves: "2", seed: "7", result: "noise" }),
-    svg("feDisplacementMap", { in: "SourceGraphic", in2: "noise", scale: "2.2" }),
-  );
-  const defs = svg("defs");
-  defs.append(filter, svg("path", { id: "ring", d: "M 110 110 m -77 0 a 77 77 0 1 1 154 0 a 77 77 0 1 1 -154 0" }));
-
-  const g = svg("g", { filter: "url(#ink)", fill: "none", stroke: "currentColor" });
-  g.append(
-    svg("circle", { cx: 110, cy: 110, r: 103, "stroke-width": 4 }),
-    svg("circle", { cx: 110, cy: 110, r: 94, "stroke-width": 1.4 }),
-    svg("circle", { cx: 110, cy: 110, r: 62, "stroke-width": 1.4 }),
-  );
-  const ring = svg("text", { class: "ring-text", fill: "currentColor", stroke: "none" });
-  ring.append(svg("textPath", { href: "#ring", textLength: 466, lengthAdjust: "spacing" }, `BILIBILI IP ANCHOR ★ ${date} ★`));
-  g.append(
-    ring,
-    svg("text", { class: "word", x: 110, y: 106, "font-size": size, fill: "currentColor", stroke: "none", "text-anchor": "middle", "dominant-baseline": "central" }, word || "?"),
-    svg("text", { class: "sub", x: 112, y: 148, fill: "currentColor", stroke: "none", "text-anchor": "middle" }, "IP 属地"),
-  );
-  root.append(defs, g);
-
-  const box = $("stamp");
-  box.replaceChildren(root);
-  box.classList.toggle("is-pending", !word);
-  box.classList.toggle("is-new", Boolean(word) && wasPending);
+function zonePlace(z) {
+  const parts = z.country === "中国" ? [z.province, z.city] : [z.country, z.province];
+  return [...new Set(parts.filter(Boolean))].join(" ") || "未知地区";
 }
 
 function renderZone(s) {
   const place = $("place");
   const meta = $("place-meta");
   meta.replaceChildren();
-  const z = s.zone;
-  if (!z) {
+  if (!s.zone) {
     place.textContent = s.zone_error ? "暂时查不到" : "查询中";
     place.classList.add("is-pending");
     if (s.zone_error) meta.append(el("span", "error small", `查询失败：${s.zone_error}`));
-    renderStamp("");
     return;
   }
   place.classList.remove("is-pending");
-  const domestic = z.country === "中国";
-  const parts = domestic ? [z.province, z.city] : [z.country, z.province];
-  place.textContent = [...new Set(parts.filter(Boolean))].join(" ") || "未知地区";
-  if (z.isp) meta.append(el("span", "tag", z.isp));
-  if (z.addr) {
-    const tag = el("span", "tag");
-    tag.append(el("code", null, z.addr));
-    meta.append(tag);
+  place.textContent = zonePlace(s.zone);
+  if (s.zone.isp) meta.append(el("span", "badge", s.zone.isp));
+  if (s.zone.addr) meta.append(el("span", "badge mono", s.zone.addr));
+}
+
+function renderStats(list) {
+  let ok = 0, bad = 0, failed = 0, next = null;
+  for (const a of list) {
+    if (!a.logged_in) bad++;
+    else if (a.last && !a.last.ok) failed++;
+    else if (a.last) ok++;
+    if (a.next && (!next || a.next < next)) next = a.next;
   }
-  renderStamp((domestic ? z.province : z.country) || "");
+  $("stat-count").textContent = list.length;
+  $("stat-ok").textContent = ok;
+  $("stat-failed").textContent = `${failed} 个上次失败`;
+  $("stat-bad").textContent = bad;
+  $("stat-bad").classList.toggle("bad", bad > 0);
+  $("stat-next").textContent = next ? fmtTime(next) : "—";
+  $("stat-next-sub").textContent = next ? fmtRelative(next) : "没有排程";
+
+  const badge = $("nav-badge");
+  badge.hidden = list.length === 0;
+  badge.textContent = bad || list.length;
+  badge.classList.toggle("is-bad", bad > 0);
 }
 
 /* 账号列表 */
 
 const rows = new Map();
+const AVATAR_COLORS = ["#e11d48", "#db2777", "#c026d3", "#9333ea", "#4f46e5", "#0284c7", "#0891b2", "#0d9488", "#059669", "#65a30d", "#ca8a04", "#ea580c"];
+
+function initials(name) {
+  const words = name.trim().split(/\s+/);
+  if (words.length > 1 && /^[\x00-\x7f]+$/.test(name)) return (words[0][0] + words[1][0]).toUpperCase();
+  return Array.from(name.trim())[0] || "?";
+}
+
+function avatarColor(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
 
 function faceURL(face) {
   if (!/^(https?:)?\/\/[a-z0-9.-]+\.hdslb\.com\//i.test(face)) return "";
@@ -185,10 +205,10 @@ function faceURL(face) {
 }
 
 function accountState(a) {
-  if (a.running) return ["running", "运行中"];
-  if (!a.logged_in) return ["bad", "登录失效"];
-  if (!a.last) return ["idle", "等待首次运行"];
-  return a.last.ok ? ["ok", "正常"] : ["warn", "上次失败"];
+  if (a.running) return ["运行中", "var(--accent)"];
+  if (!a.logged_in) return ["登录失效", "var(--danger)"];
+  if (!a.last) return ["等待首次运行", "var(--muted)"];
+  return a.last.ok ? ["正常", "var(--success)"] : ["上次失败", "var(--warning)"];
 }
 
 function buildRow(mid) {
@@ -196,18 +216,18 @@ function buildRow(mid) {
   img.alt = "";
   img.hidden = true;
   img.referrerPolicy = "no-referrer";
-  const initial = el("span", "initial");
+  const initial = el("span");
   img.addEventListener("load", () => { img.hidden = false; initial.hidden = true; });
   img.addEventListener("error", () => { img.hidden = true; initial.hidden = false; });
   const avatar = el("span", "avatar");
   avatar.append(img, initial);
 
   const name = el("span", "acc-name");
-  const pill = el("span", "pill");
+  const state = el("span", "badge state");
   const nameLine = el("div", "acc-name-line");
-  nameLine.append(name, pill);
+  nameLine.append(name, state);
+  const uid = el("span", "muted tiny", `UID ${mid}`);
   const who = el("div", "acc-who");
-  const uid = el("div", "acc-uid", `UID ${mid}`);
   who.append(nameLine, uid);
   const id = el("div", "acc-id");
   id.append(avatar, who);
@@ -218,20 +238,22 @@ function buildRow(mid) {
   times.append(el("dt", null, "上次运行"), last, el("dt", null, "下次运行"), next);
 
   const relogin = el("button", "primary", "重新扫码");
-  const run = el("button", "secondary", "立即运行");
-  const remove = el("button", "link danger", "退出");
+  const run = el("button", null, "立即运行");
+  const remove = el("button", "danger", "退出");
   for (const b of [relogin, run, remove]) b.type = "button";
   const actions = el("div", "acc-actions");
   actions.append(relogin, run, remove);
 
+  const main = el("div", "acc-main");
+  main.append(id, times, actions);
   const err = el("p", "acc-error");
   const li = el("li", "acc");
-  li.append(id, times, actions, err);
+  li.append(main, err);
 
-  const row = { el: li, img, initial, name, uid, pill, last, next, relogin, run, remove, err, face: null, label: "" };
+  const row = { el: li, avatar, img, initial, name, uid, state, last, next, relogin, run, remove, err, face: null, label: "" };
   relogin.addEventListener("click", openQR);
   run.addEventListener("click", () => runAccount(mid, row));
-  remove.addEventListener("click", () => removeAccount(mid, row));
+  remove.addEventListener("click", () => askRemove(mid, row));
   return row;
 }
 
@@ -240,7 +262,8 @@ function updateRow(row, a) {
   row.name.textContent = row.label;
   row.name.title = row.label;
   row.uid.hidden = !a.uname;
-  row.initial.textContent = a.uname ? Array.from(a.uname)[0] : "B";
+  row.initial.textContent = initials(row.label);
+  row.avatar.style.background = avatarColor(row.label);
 
   const face = faceURL(a.face || "");
   if (face !== row.face) {
@@ -251,9 +274,9 @@ function updateRow(row, a) {
     else row.img.removeAttribute("src");
   }
 
-  const [state, text] = accountState(a);
-  row.pill.dataset.state = state;
-  row.pill.textContent = text;
+  const [text, color] = accountState(a);
+  row.state.textContent = text;
+  row.state.style.setProperty("--c", color);
 
   row.last.replaceChildren();
   if (a.last) row.last.append(`${fmtTime(a.last.at)} `, el("span", a.last.ok ? "ok" : "bad", a.last.ok ? "成功" : "失败"));
@@ -265,8 +288,9 @@ function updateRow(row, a) {
 
   row.relogin.hidden = a.logged_in;
   row.run.hidden = !a.logged_in;
-  row.run.disabled = a.running;
+  row.run.disabled = a.running || row.busy;
   row.run.textContent = a.running ? "运行中" : "立即运行";
+  row.remove.disabled = Boolean(row.busy);
 }
 
 function renderAccounts(list) {
@@ -288,96 +312,150 @@ function renderAccounts(list) {
       rows.delete(mid);
     }
   }
-
   const empty = list.length === 0;
   ul.hidden = empty;
-  $("accounts-empty").hidden = !empty;
+  for (const box of document.querySelectorAll("[data-empty]")) {
+    if (box.hidden !== !empty) box.hidden = !empty;
+    if (empty && !box.firstChild) {
+      box.append($("empty-tpl").content.cloneNode(true));
+      box.querySelector("[data-qr]").addEventListener("click", openQR);
+    }
+  }
   $("run-all").hidden = empty;
-  $("run-all").disabled = list.every((a) => a.running || !a.logged_in);
-
-  const bad = list.filter((a) => !a.logged_in).length;
-  $("acc-summary").textContent = empty
-    ? "可以添加多个账号，每个账号各自排程。"
-    : `${list.length} 个账号，各自排程、同时进行${bad ? `；${bad} 个需要重新扫码` : ""}`;
+  $("run-all").disabled = !list.some((a) => a.logged_in && !a.running);
 }
 
 async function runAccount(mid, row) {
+  row.busy = true;
   row.run.disabled = true;
   try {
     await api("POST", `/api/accounts/${mid}/run`);
-    setTimeout(refresh, 600);
   } catch (err) {
-    if (err instanceof Unauthorized) return;
-    row.err.textContent = err.message;
-    row.run.disabled = false;
+    if (!(err instanceof Unauthorized)) toast(err.message);
   }
+  row.busy = false;
+  refresh();
 }
 
-async function removeAccount(mid, row) {
-  if (!confirm(`退出「${row.label}」？\n服务器上的这份会话会在 B 站注销并删除，之后不再为这个账号运行。`)) return;
+let removing = null;
+
+function askRemove(mid, row) {
+  removing = { mid, row };
+  $("confirm-title").textContent = `退出「${row.label}」？`;
+  $("confirm").showModal();
+  $("confirm-ok").focus();
+}
+
+$("confirm-cancel").addEventListener("click", () => $("confirm").close());
+$("confirm-ok").addEventListener("click", async () => {
+  $("confirm").close();
+  const { mid, row } = removing;
+  row.busy = true;
   row.remove.disabled = true;
   try {
     await api("DELETE", `/api/accounts/${mid}`);
-    refresh();
+    toast(`已退出 ${row.label}`);
   } catch (err) {
-    if (err instanceof Unauthorized) return;
-    $("acc-error").textContent = err.message;
-    row.remove.disabled = false;
+    if (!(err instanceof Unauthorized)) toast(err.message);
   }
-}
+  row.busy = false;
+  refresh();
+});
 
 $("run-all").addEventListener("click", async () => {
   $("run-all").disabled = true;
-  $("acc-error").textContent = "";
   try {
-    await api("POST", "/api/run");
-    setTimeout(refresh, 600);
+    const { triggered } = await (await api("POST", "/api/run")).json();
+    toast(`已让 ${triggered} 个账号立即运行`);
   } catch (err) {
-    if (!(err instanceof Unauthorized)) $("acc-error").textContent = err.message;
+    if (!(err instanceof Unauthorized)) toast(err.message);
   }
+  setTimeout(refresh, 600);
 });
 
 /* 设置 */
 
-let settingsDirty = false;
+let serverSettings = null;
+let formEdited = false;
 
-function renderSettings(st) {
-  if (settingsDirty) return;
+function durationError(s, minMinutes) {
+  const m = /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(s.trim());
+  if (!s.trim() || !m || (!m[1] && !m[2] && !m[3])) return "写成 90m、6h 这样";
+  const min = (+m[1] || 0) * 60 + (+m[2] || 0) + (+m[3] || 0) / 60;
+  return min < minMinutes ? `最少 ${minMinutes}m` : "";
+}
+
+function formValue() {
+  return {
+    interval: $("interval").value.trim(),
+    jitter: $("jitter").value.trim(),
+    bvid: $("bvid").value.trim(),
+    do_dynamic: $("dynamic").checked,
+  };
+}
+
+function validateForm() {
+  const v = formValue();
+  const errors = {
+    interval: durationError(v.interval, 10),
+    jitter: v.jitter === "0" ? "" : durationError(v.jitter, 0),
+    bvid: /^BV[0-9A-Za-z]{10}$/.test(v.bvid) ? "" : "BV 号是 BV 开头的 12 位",
+  };
+  for (const [k, msg] of Object.entries(errors)) {
+    document.querySelector(`[data-error="${k}"]`).textContent = msg;
+    $(k).setAttribute("aria-invalid", msg ? "true" : "false");
+  }
+  const invalid = Object.values(errors).some(Boolean);
+  $("save").disabled = !formEdited || invalid;
+  $("reset").disabled = !formEdited;
+}
+
+function fillForm(st) {
   $("interval").value = st.interval;
   $("jitter").value = st.jitter;
   $("bvid").value = st.bvid;
   $("dynamic").checked = st.do_dynamic;
+  formEdited = false;
+  $("form-error").textContent = "";
+  validateForm();
+}
+
+function renderSettings(st) {
+  serverSettings = st;
+  if (!formEdited) fillForm(st);
 }
 
 $("settings").addEventListener("input", () => {
-  settingsDirty = true;
-  $("saved").textContent = "";
+  formEdited = true;
+  validateForm();
 });
+
+$("reset").addEventListener("click", () => serverSettings && fillForm(serverSettings));
 
 $("settings").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const saved = $("saved");
-  saved.classList.remove("is-error");
+  $("save").disabled = true;
+  $("save").textContent = "正在保存";
+  $("form-error").textContent = "";
   try {
-    await api("PUT", "/api/settings", {
-      interval: $("interval").value.trim(),
-      jitter: $("jitter").value.trim(),
-      bvid: $("bvid").value.trim(),
-      do_dynamic: $("dynamic").checked,
-    });
-    settingsDirty = false;
-    saved.textContent = "已保存";
+    const saved = await (await api("PUT", "/api/settings", formValue())).json();
+    fillForm(saved);
+    toast("设置已保存");
     refresh();
   } catch (err) {
-    if (err instanceof Unauthorized) return;
-    saved.classList.add("is-error");
-    saved.textContent = err.message;
+    if (!(err instanceof Unauthorized)) $("form-error").textContent = err.message;
+    validateForm();
   }
+  $("save").textContent = "保存设置";
 });
 
 /* 日志 */
 
 let logSig = "";
+
+function scrollLogToEnd() {
+  $("log").scrollTop = $("log").scrollHeight;
+}
 
 function renderLogs(lines) {
   const sig = `${lines.length}|${lines[lines.length - 1] || ""}`;
@@ -386,6 +464,7 @@ function renderLogs(lines) {
   const box = $("log");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
   const frag = document.createDocumentFragment();
+  if (!lines.length) frag.append(el("span", "t", "还没有日志"));
   for (const line of lines) {
     const row = el("span", /失败|失效|错误/.test(line) ? "is-bad" : null);
     const m = /^\d{4}\/(\d\d\/\d\d \d\d:\d\d:\d\d) (?:(\[[^\]]*\]) )?(.*)$/.exec(line);
@@ -399,28 +478,29 @@ function renderLogs(lines) {
     frag.append(row, "\n");
   }
   box.replaceChildren(frag);
-  if (atBottom) box.scrollTop = box.scrollHeight;
+  if (atBottom) scrollLogToEnd();
 }
 
 /* 轮询状态 */
 
 async function refresh() {
-  const accErr = $("acc-error");
   try {
     const s = await (await api("GET", "/api/status")).json();
     renderZone(s);
+    renderStats(s.accounts || []);
     renderAccounts(s.accounts || []);
     renderSettings(s.settings);
     renderLogs(s.logs || []);
-    $("version").textContent = s.version;
-    if (accErr.dataset.conn) {
-      accErr.textContent = "";
-      delete accErr.dataset.conn;
-    }
+    $("version").textContent = `bili-ip-anchor ${s.version}`;
+    $("conn-dot").className = "dot ok";
+    $("conn-text").textContent = `已连接 · ${s.version}`;
+    $("banner").hidden = true;
   } catch (err) {
     if (err instanceof Unauthorized) return;
-    accErr.textContent = `连不上服务：${err.message}`;
-    accErr.dataset.conn = "1";
+    $("conn-dot").className = "dot bad";
+    $("conn-text").textContent = "连接中断，正在重试";
+    $("banner").textContent = `连不上服务，显示的是之前的数据：${err.message}`;
+    $("banner").hidden = false;
   }
 }
 
@@ -430,7 +510,6 @@ const QR_TEXT = {
   waiting: "用 B 站 App 扫一扫",
   scanned: "已扫码，请在手机上确认登录",
   expired: "二维码已过期",
-  success: "登录成功，已添加这个账号",
 };
 
 let qrPoll = null;
@@ -441,15 +520,21 @@ function stopQR() {
   qrPoll = null;
 }
 
-function setQRState(text, ok) {
+function setQRState(text, kind) {
   $("qr-state").textContent = text;
-  $("qr-state").classList.toggle("is-ok", Boolean(ok));
+  $("qr-state").className = kind ? `is-${kind}` : "";
+}
+
+function qrFailed(text, kind) {
+  stopQR();
+  setQRState(text, kind);
+  document.querySelector(".qr-frame").classList.add("is-dim");
+  $("qr-renew").hidden = false;
 }
 
 async function startQR() {
   stopQR();
-  const frame = document.querySelector(".qr-frame");
-  frame.classList.add("is-dim");
+  document.querySelector(".qr-frame").classList.add("is-dim");
   $("qr-renew").hidden = true;
   setQRState("正在获取二维码");
   try {
@@ -457,35 +542,32 @@ async function startQR() {
     if (qrURL) URL.revokeObjectURL(qrURL);
     qrURL = URL.createObjectURL(blob);
     $("qr-img").src = qrURL;
-    frame.classList.remove("is-dim");
+    document.querySelector(".qr-frame").classList.remove("is-dim");
     setQRState(QR_TEXT.waiting);
     qrPoll = setInterval(pollQR, 2000);
   } catch (err) {
     if (err instanceof Unauthorized) { $("qr").close(); return; }
-    setQRState(err.message);
-    $("qr-renew").hidden = false;
+    qrFailed(err.message, "error");
   }
 }
 
 async function pollQR() {
   try {
-    const { state } = await (await api("GET", "/api/qr")).json();
-    if (QR_TEXT[state]) setQRState(QR_TEXT[state], state === "success");
-    if (state === "expired" || state === "none") {
-      stopQR();
-      document.querySelector(".qr-frame").classList.add("is-dim");
-      $("qr-renew").hidden = false;
-    }
+    const { state, mid } = await (await api("GET", "/api/qr")).json();
     if (state === "success") {
       stopQR();
+      $("qr").close();
+      toast(`已添加账号 UID ${mid}，正在运行第一轮`);
+      location.hash = "#accounts";
       refresh();
-      setTimeout(() => $("qr").close(), 1200);
+    } else if (state === "expired" || state === "none") {
+      qrFailed(QR_TEXT.expired);
+    } else if (QR_TEXT[state]) {
+      setQRState(QR_TEXT[state], state === "scanned" ? "scanned" : "");
     }
   } catch (err) {
-    stopQR();
     if (err instanceof Unauthorized) { $("qr").close(); return; }
-    setQRState(err.message);
-    $("qr-renew").hidden = false;
+    qrFailed(err.message, "error");
   }
 }
 
@@ -495,7 +577,6 @@ function openQR() {
 }
 
 $("qr-open").addEventListener("click", openQR);
-$("qr-open-empty").addEventListener("click", openQR);
 $("qr-renew").addEventListener("click", startQR);
 $("qr-close").addEventListener("click", () => $("qr").close());
 $("qr").addEventListener("close", stopQR);
