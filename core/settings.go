@@ -197,3 +197,12 @@ func (e *Engine) saveSettings(s Settings) error {
 	}
 	return os.WriteFile(e.settingsFile(), b, 0600)
 }
+
+// DefaultSettings 是没有任何配置时的设置：每 6 小时一轮，只发心跳
+func DefaultSettings() Settings {
+	return Settings{
+		Videos:   []string{"BV15HFVz1EvM"},
+		Interval: Duration(6 * time.Hour),
+		Jitter:   Duration(30 * time.Minute),
+	}
+}

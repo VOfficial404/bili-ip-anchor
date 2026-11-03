@@ -42,3 +42,25 @@ func TestGenerateIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 托盘图标：黑色线条锚、透明底，macOS 会按菜单栏的颜色着色
+func TestGenerateTrayIcon(t *testing.T) {
+	if os.Getenv("GEN_ICON") == "" {
+		t.Skip("设置 GEN_ICON=1 才重新生成 resources/tray.png")
+	}
+	view := func(c *ui.Context) {
+		th := *c.Theme()
+		th.Background = ui.Transparent
+		c.SetTheme(&th)
+		ui.Box(c).Fill().Center().Children(func() {
+			ui.Icon(c, iconAnchor).Size(30, 30).TextColor(ui.Hex("#000000"))
+		})
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, ui.Render(view, 32, 32, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("resources/tray.png", buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+}

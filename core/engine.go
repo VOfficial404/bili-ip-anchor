@@ -21,10 +21,11 @@ import (
 type Config struct {
 	DataDir   string
 	Version   string
-	Password  string    // WebUI 密码
-	Local     bool      // 在桌面或手机 App 里运行，而不是服务器上
-	Defaults  Settings  // settings.json 不存在时用它
-	LogOutput io.Writer // 除了 WebUI 的日志缓冲以外再写到哪里，可以为 nil
+	Password  string            // WebUI 密码
+	Local     bool              // 在桌面或手机 App 里运行，而不是服务器上
+	Defaults  Settings          // settings.json 不存在时用它
+	LogOutput io.Writer         // 除了 WebUI 的日志缓冲以外再写到哪里，可以为 nil
+	Transport http.RoundTripper // 不为 nil 时代替真实网络和代理，给测试和演示用
 }
 
 // ringLog 保留最近若干行日志给 WebUI 看
@@ -68,19 +69,18 @@ type Engine struct {
 	log  *log.Logger
 	logs *ringLog
 
-	mu            sync.Mutex
-	set           Settings
-	accounts      map[string]*account
-	zone          *zoneInfo
-	zoneErr       string
-	zoneAt        time.Time
-	qr            *QRLogin
-	tvqr          map[string]*tvLogin // 正在授权的账号
-	sessions      map[string]time.Time
-	autoTokens    map[string]time.Time
-	videos        map[string]videoCache
-	transports    map[string]*http.Transport
-	testTransport http.RoundTripper // 不为 nil 时代替真实网络，给测试和演示用
+	mu         sync.Mutex
+	set        Settings
+	accounts   map[string]*account
+	zone       *Zone
+	zoneErr    string
+	zoneAt     time.Time
+	qr         *QRLogin
+	tvqr       map[string]*tvLogin // 正在授权的账号
+	sessions   map[string]time.Time
+	autoTokens map[string]time.Time
+	videos     map[string]videoCache
+	transports map[string]*http.Transport
 
 	zoneKick chan struct{}
 	stop     chan struct{}
@@ -274,7 +274,7 @@ func (e *Engine) zoneLoop() {
 	}
 }
 
-func (e *Engine) currentZone() *zoneInfo {
+func (e *Engine) currentZone() *Zone {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.zone
@@ -400,7 +400,7 @@ type statusResp struct {
 	Version       string          `json:"version"`
 	Mode          string          `json:"mode"` // server 或 local
 	Accounts      []accountStatus `json:"accounts"`
-	Zone          *zoneInfo       `json:"zone"`
+	Zone          *Zone           `json:"zone"`
 	ZoneError     string          `json:"zone_error,omitempty"`
 	ZoneCheckedAt *time.Time      `json:"zone_checked_at,omitempty"`
 	Settings      Settings        `json:"settings"`
@@ -499,3 +499,6 @@ func (e *Engine) RunOnce() error {
 	}
 	return nil
 }
+
+// Password 是 WebUI 的面板密码；本机模式下客户端用它连自己开的 WebUI
+func (e *Engine) Password() string { return e.cfg.Password }

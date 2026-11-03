@@ -271,7 +271,7 @@ func logout(c *biliClient, cookies map[string]string) error {
 	return nil
 }
 
-type zoneInfo struct {
+type Zone struct {
 	Addr     string `json:"addr"`
 	Country  string `json:"country"`
 	Province string `json:"province"`
@@ -280,7 +280,7 @@ type zoneInfo struct {
 }
 
 // region 是主页属地会显示的那一级：国内是省份，国外是国家
-func (z zoneInfo) region() string {
+func (z Zone) region() string {
 	if z.Country == "中国" && z.Province != "" {
 		return z.Province
 	}
@@ -288,35 +288,53 @@ func (z zoneInfo) region() string {
 }
 
 // fetchZone 查询 B 站把出口 IP 识别为哪里
-func fetchZone(c *biliClient) (zoneInfo, error) {
+func fetchZone(c *biliClient) (Zone, error) {
 	var r struct {
 		apiResp
-		Data zoneInfo `json:"data"`
+		Data Zone `json:"data"`
 	}
 	if err := c.do("GET", "https://api.bilibili.com/x/web-interface/zone", nil, nil, &r); err != nil {
-		return zoneInfo{}, err
+		return Zone{}, err
 	}
 	if r.Code != 0 {
-		return zoneInfo{}, fmt.Errorf("%d %s", r.Code, r.Message)
+		return Zone{}, fmt.Errorf("%d %s", r.Code, r.Message)
 	}
 	return r.Data, nil
 }
 
 // TestProxy 经过 proxy 查询出口 IP 归属，用来确认代理可用
-func (e *Engine) TestProxy(proxy string) (zoneInfo, error) {
-	if _, err := ParseProxy(proxy); err != nil {
-		return zoneInfo{}, err
-	}
-	z, err := fetchZone(newClient(e.roundTripper(strings.TrimSpace(proxy)), nil))
-	if err != nil {
-		return z, fmt.Errorf("经过代理访问 B 站失败：%w", err)
-	}
-	return z, nil
+func (e *Engine) TestProxy(proxy string) (Zone, error) {
+	return ProbeProxy(proxy, e.cfg.Transport)
 }
 
+// ProbeProxy 经过 proxy（空字符串表示直连）查询 B 站把出口 IP 识别为哪里，不需要 Engine。
+// rt 不为 nil 时代替网络，给测试用。
+func ProbeProxy(proxy string, rt http.RoundTripper) (Zone, error) {
+	u, err := ParseProxy(proxy)
+	if err != nil {
+		return Zone{}, err
+	}
+	if rt == nil {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		if u != nil {
+			t.Proxy = http.ProxyURL(u)
+		}
+		defer t.CloseIdleConnections()
+		rt = t
+	}
+	z, err := fetchZone(newClient(rt, nil))
+	if err != nil && u != nil {
+		return z, fmt.Errorf("经过代理访问 B 站失败：%w", err)
+	}
+	return z, err
+}
+
+// Region 是主页属地会显示的那一级：国内是省份，国外是国家
+func (z Zone) Region() string { return z.region() }
+
 func (e *Engine) roundTripper(proxy string) http.RoundTripper {
-	if e.testTransport != nil {
-		return e.testTransport
+	if e.cfg.Transport != nil {
+		return e.cfg.Transport
 	}
 	return e.transport(proxy)
 }

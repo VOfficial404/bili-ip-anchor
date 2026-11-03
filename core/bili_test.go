@@ -237,10 +237,10 @@ func TestSameRegion(t *testing.T) {
 			t.Errorf("sameRegion(%q, %q) = %v", c.home, c.target, got)
 		}
 	}
-	if r := (zoneInfo{Country: "中国", Province: "广东", City: "深圳"}).region(); r != "广东" {
+	if r := (Zone{Country: "中国", Province: "广东", City: "深圳"}).region(); r != "广东" {
 		t.Errorf("region = %s", r)
 	}
-	if r := (zoneInfo{Country: "日本", Province: "东京都"}).region(); r != "日本" {
+	if r := (Zone{Country: "日本", Province: "东京都"}).region(); r != "日本" {
 		t.Errorf("region = %s", r)
 	}
 }
@@ -281,7 +281,7 @@ func TestProxyClient(t *testing.T) {
 			t.Fatal(err)
 		}
 		var r struct {
-			Data zoneInfo `json:"data"`
+			Data Zone `json:"data"`
 		}
 		if err := e.anonClient().do("GET", target.URL, nil, nil, &r); err != nil {
 			t.Fatalf("%s：%v", tc.proxy, err)

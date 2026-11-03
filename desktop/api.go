@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// 这些类型与服务器 /api/status 的 JSON 对应，见 bili-ip-anchor 的 app.go 和 accounts.go
+// 这些类型与 WebUI 的 /api/status 对应，见 core/engine.go 和 core/accounts.go
 
 type runResult struct {
 	At    time.Time `json:"at"`
@@ -21,14 +21,39 @@ type runResult struct {
 	Error string    `json:"error"`
 }
 
+type stats struct {
+	Coins  float64 `json:"coins"`
+	BCoins float64 `json:"bcoins"`
+	Level  int     `json:"level"`
+	VIP    string  `json:"vip"`
+}
+
+type homeLocation struct {
+	Text         string     `json:"text"`
+	CheckedAt    time.Time  `json:"checked_at"`
+	MatchedSince *time.Time `json:"matched_since"`
+	Error        string     `json:"error"`
+}
+
+type cookieStatus struct {
+	Expires    *time.Time `json:"expires"`
+	CanRefresh bool       `json:"can_refresh"`
+}
+
 type account struct {
-	Mid      string     `json:"mid"`
-	Uname    string     `json:"uname"`
-	Face     string     `json:"face"`
-	LoggedIn bool       `json:"logged_in"`
-	Running  bool       `json:"running"`
-	Last     *runResult `json:"last"`
-	Next     *time.Time `json:"next"`
+	Mid      string        `json:"mid"`
+	Uname    string        `json:"uname"`
+	Face     string        `json:"face"`
+	LoggedIn bool          `json:"logged_in"`
+	Running  bool          `json:"running"`
+	Busy     string        `json:"busy"`
+	Last     *runResult    `json:"last"`
+	LastOK   *time.Time    `json:"last_ok"`
+	Next     *time.Time    `json:"next"`
+	Stats    *stats        `json:"stats"`
+	Cookie   cookieStatus  `json:"cookie"`
+	AppAuth  bool          `json:"app_auth"`
+	Home     *homeLocation `json:"home"`
 }
 
 type zone struct {
@@ -40,25 +65,45 @@ type zone struct {
 }
 
 type settings struct {
-	BVID      string `json:"bvid"`
-	DoDynamic bool   `json:"do_dynamic"`
-	Interval  string `json:"interval"`
-	Jitter    string `json:"jitter"`
+	Videos      []string `json:"videos"`
+	DoDynamic   bool     `json:"do_dynamic"`
+	DynamicText string   `json:"dynamic_text"`
+	Interval    string   `json:"interval"`
+	Jitter      string   `json:"jitter"`
+	Proxy       string   `json:"proxy"`
+}
+
+type imageInfo struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type videoInfo struct {
+	BVID     string `json:"bvid"`
+	Title    string `json:"title"`
+	Cover    string `json:"cover"`
+	Owner    string `json:"owner"`
+	Duration int    `json:"duration"`
+	Views    int64  `json:"views"`
 }
 
 type status struct {
-	Version   string    `json:"version"`
-	Accounts  []account `json:"accounts"`
-	Zone      *zone     `json:"zone"`
-	ZoneError string    `json:"zone_error"`
-	Settings  settings  `json:"settings"`
-	Logs      []string  `json:"logs"`
+	Version       string      `json:"version"`
+	Mode          string      `json:"mode"` // server 或 local；v0.5 及更早的服务器没有这个字段
+	Accounts      []account   `json:"accounts"`
+	Zone          *zone       `json:"zone"`
+	ZoneError     string      `json:"zone_error"`
+	ZoneCheckedAt *time.Time  `json:"zone_checked_at"`
+	Settings      settings    `json:"settings"`
+	Images        []imageInfo `json:"images"`
+	Logs          []string    `json:"logs"`
 }
 
 var errUnauthorized = errors.New("面板密码不对")
 
 // client 用 WebUI 的接口操作服务器，和浏览器里的面板一样：
 // 先用密码换一个会话 Cookie，之后的请求都带着它；会话过期时自动用密码重新登录一次。
+// 本机模式下连的是程序自己开在 127.0.0.1 上的 WebUI。
 type client struct {
 	base     string
 	password string
@@ -74,7 +119,7 @@ func newClient(server, password string) (*client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &client{base: base, password: password, http: &http.Client{Timeout: 20 * time.Second, Jar: jar}}, nil
+	return &client{base: base, password: password, http: &http.Client{Timeout: 30 * time.Second, Jar: jar}}, nil
 }
 
 // normalizeServer 补上 http://，去掉末尾的斜杠
@@ -95,7 +140,7 @@ func normalizeServer(s string) (string, error) {
 	return u.String(), nil
 }
 
-func (c *client) send(method, path string, body []byte) (*http.Response, error) {
+func (c *client) send(method, path string, body []byte, ctype string) (*http.Response, error) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -105,8 +150,8 @@ func (c *client) send(method, path string, body []byte) (*http.Response, error) 
 		return nil, err
 	}
 	req.Header.Set("X-Requested-With", "bia") // 服务器要求写操作带它，用来防 CSRF
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -116,16 +161,8 @@ func (c *client) send(method, path string, body []byte) (*http.Response, error) 
 }
 
 // do 发出请求；会话失效时重新登录后再试一次。返回状态码为 200 的响应。
-func (c *client) do(method, path string, in any) (*http.Response, error) {
-	var body []byte
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return nil, err
-		}
-		body = b
-	}
-	resp, err := c.send(method, path, body)
+func (c *client) do(method, path string, body []byte, ctype string) (*http.Response, error) {
+	resp, err := c.send(method, path, body, ctype)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +171,7 @@ func (c *client) do(method, path string, in any) (*http.Response, error) {
 		if err := c.login(); err != nil {
 			return nil, err
 		}
-		if resp, err = c.send(method, path, body); err != nil {
+		if resp, err = c.send(method, path, body, ctype); err != nil {
 			return nil, err
 		}
 	}
@@ -156,13 +193,22 @@ func responseError(resp *http.Response) error {
 		return errors.New(e.Error)
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return fmt.Errorf("这个地址不是 bili-ip-anchor 的 WebUI（HTTP %d）", resp.StatusCode)
+		return fmt.Errorf("服务器不支持这个操作（HTTP %d），可能是旧版本，请更新服务器", resp.StatusCode)
 	}
 	return fmt.Errorf("请求失败（HTTP %d）", resp.StatusCode)
 }
 
 func (c *client) doJSON(method, path string, in, out any) error {
-	resp, err := c.do(method, path, in)
+	var body []byte
+	ctype := ""
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body, ctype = b, "application/json"
+	}
+	resp, err := c.do(method, path, body, ctype)
 	if err != nil {
 		return err
 	}
@@ -176,13 +222,23 @@ func (c *client) doJSON(method, path string, in, out any) error {
 	return nil
 }
 
+// bytes 发出请求并读出响应体，用于二维码和图片
+func (c *client) bytes(method, path string) ([]byte, error) {
+	resp, err := c.do(method, path, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+}
+
 func (c *client) login() error {
 	return c.doJSON("POST", "/api/session", map[string]string{"password": c.password}, nil)
 }
 
 // logout 让服务器忘掉这个面板会话，失败也无所谓
 func (c *client) logout() {
-	if resp, err := c.send("DELETE", "/api/session", nil); err == nil {
+	if resp, err := c.send("DELETE", "/api/session", nil, ""); err == nil {
 		resp.Body.Close()
 	}
 }
@@ -201,12 +257,17 @@ func (c *client) runAll() (int, error) {
 	return r.Triggered, err
 }
 
-func (c *client) runAccount(mid string) error {
-	return c.doJSON("POST", "/api/accounts/"+url.PathEscape(mid)+"/run", nil, nil)
+func accountPath(mid, action string) string {
+	p := "/api/accounts/" + url.PathEscape(mid)
+	if action != "" {
+		p += "/" + action
+	}
+	return p
 }
 
-func (c *client) removeAccount(mid string) error {
-	return c.doJSON("DELETE", "/api/accounts/"+url.PathEscape(mid), nil, nil)
+// accountAction 对一个账号做一件事，例如 POST run、POST check、DELETE appauth
+func (c *client) accountAction(method, mid, action string) error {
+	return c.doJSON(method, accountPath(mid, action), nil, nil)
 }
 
 func (c *client) saveSettings(s settings) (settings, error) {
@@ -215,30 +276,61 @@ func (c *client) saveSettings(s settings) (settings, error) {
 	return out, err
 }
 
-// startQR 让服务器向 B 站申请一张登录二维码，返回 PNG
-func (c *client) startQR() ([]byte, error) {
-	resp, err := c.do("POST", "/api/qr", nil)
-	if err != nil {
-		return nil, err
+// startQR 让服务器向 B 站申请一张二维码，返回 PNG。mid 为空时是登录新账号，否则是给这个账号授权查询主页属地。
+func (c *client) startQR(mid string) ([]byte, error) {
+	if mid == "" {
+		return c.bytes("POST", "/api/qr")
 	}
-	defer resp.Body.Close()
-	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return c.bytes("POST", accountPath(mid, "appauth"))
 }
 
-func (c *client) pollQR() (state, mid string, err error) {
+func (c *client) pollQR(mid string) (state, newMid string, err error) {
 	var r struct {
 		State string `json:"state"`
 		Mid   string `json:"mid"`
 	}
-	err = c.doJSON("GET", "/api/qr", nil, &r)
+	path := "/api/qr"
+	if mid != "" {
+		path = accountPath(mid, "appauth")
+	}
+	err = c.doJSON("GET", path, nil, &r)
 	return r.State, r.Mid, err
 }
 
-// fetchFace 下载头像缩略图。头像在 B 站的图床上，不经过服务器。
-func fetchFace(face string) ([]byte, error) {
-	u := faceURL(face)
+func (c *client) video(bvid string) (videoInfo, error) {
+	var v videoInfo
+	err := c.doJSON("GET", "/api/videos/"+url.PathEscape(bvid), nil, &v)
+	return v, err
+}
+
+func (c *client) image(name string) ([]byte, error) {
+	return c.bytes("GET", "/api/dynamic/images/"+url.PathEscape(name))
+}
+
+func (c *client) uploadImage(data []byte) error {
+	resp, err := c.do("POST", "/api/dynamic/images", data, http.DetectContentType(data))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+func (c *client) removeImage(name string) error {
+	return c.doJSON("DELETE", "/api/dynamic/images/"+url.PathEscape(name), nil, nil)
+}
+
+func (c *client) testProxy(proxy string) (zone, error) {
+	var z zone
+	err := c.doJSON("POST", "/api/proxy/test", map[string]string{"proxy": proxy}, &z)
+	return z, err
+}
+
+// fetchHdslb 下载 B 站图床上的图片（头像、视频封面）。只用来显示，不经过服务器，也不带账号信息。
+func fetchHdslb(src, size string) ([]byte, error) {
+	u := hdslbURL(src, size)
 	if u == "" {
-		return nil, errors.New("不是 B 站图床的头像")
+		return nil, errors.New("不是 B 站图床的图片")
 	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Get(u)
 	if err != nil {
@@ -251,11 +343,17 @@ func fetchFace(face string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 }
 
-func faceURL(face string) string {
-	u, err := url.Parse(face)
+const (
+	faceSize  = "@96w_96h_1c.png"
+	coverSize = "@160w_100h_1c.png"
+)
+
+// hdslbURL 只接受 *.hdslb.com 的地址，加上缩略图参数
+func hdslbURL(src, size string) string {
+	u, err := url.Parse(src)
 	if err != nil || !strings.HasSuffix(u.Hostname(), ".hdslb.com") {
 		return ""
 	}
 	u.Scheme = "https"
-	return u.String() + "@96w_96h_1c.png"
+	return u.String() + size
 }

@@ -71,7 +71,7 @@ func newDemoEngine(t *testing.T, dir string) *Engine {
 		Password: "demo1234",
 		Defaults: Settings{Videos: []string{"BV15HFVz1EvM", "BV1GJ411x7h7"}, DoDynamic: true, DynamicText: "今天天气不错", Interval: Duration(6 * time.Hour), Jitter: Duration(30 * time.Minute)},
 	})
-	e.testTransport = fakeBili()
+	e.cfg.Transport = fakeBili()
 	removeDelay = func() time.Duration { return time.Second }
 	for i, mid := range []string{"10001", "10002", "10003"} {
 		if _, err := e.saveAccountCookies(map[string]string{"SESSDATA": "s", "bili_jct": "j", "DedeUserID": mid}); err != nil {
