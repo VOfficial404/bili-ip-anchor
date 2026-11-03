@@ -59,6 +59,7 @@ jobs:
       - name: Bind the Go core
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          mkdir -p android/app/libs # gomobile 不会自己建目录；libs/ 不进仓库
           gomobile bind -target=android/arm64,android/arm,android/amd64 -androidapi 24 \
             -ldflags "-s -w -X github.com/VOfficial404/bili-ip-anchor/mobile.version=v${{ steps.v.outputs.name }}" \
             -o android/app/libs/bia.aar ./mobile

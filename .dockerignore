@@ -2,7 +2,5 @@
 !go.mod
 !go.sum
 !*.go
-!web
-!web/**
-!assets
-!assets/**
+!core
+!core/**
