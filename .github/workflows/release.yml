@@ -1,5 +1,6 @@
 name: Release
 
+# 推送 v* 标签时，把服务器二进制、桌面客户端安装包、Android APK 和 iOS IPA 发布到同一个 Release
 on:
   push:
     tags: ["v*"]
@@ -8,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  binaries:
+  server:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -19,17 +20,99 @@ jobs:
 
       - name: Build
         run: |
-          mkdir -p dist
+          mkdir -p out
           for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
             os=${target%/*}; arch=${target#*/}
             ext=""; [ "$os" = windows ] && ext=".exe"
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
               -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o "dist/bili-ip-anchor_${os}_${arch}${ext}" .
+              -o "out/bili-ip-anchor_${os}_${arch}${ext}" .
           done
-          cd dist && sha256sum * > checksums.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Server
+          if-no-files-found: error
+          path: out/*
+
+  desktop:
+    name: Desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-latest, platform: "darwin/universal" }
+          # MyGo 不需要 cgo，Windows 版在 Ubuntu 上交叉编译，用 NSIS 打安装包
+          - { name: Windows, os: ubuntu-latest, platform: "windows/amd64,windows/arm64" }
+          - { name: Linux, os: ubuntu-latest, platform: "linux/amd64,linux/arm64" }
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check the version matches the tag
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' mygo.json)"
+          if [ "$want" != "$have" ]; then
+            echo "desktop/mygo.json 的 version 是 $have，标签是 $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+      - name: Install NSIS
+        if: matrix.name == 'Windows'
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
+      - name: Build
+        run: go tool mygo build -platform "${{ matrix.platform }}"
+
+      - name: Zip the portable Windows apps
+        if: matrix.name == 'Windows'
+        run: |
+          for dir in build/windows-*; do
+            arch="${dir#build/windows-}"
+            (cd "$dir" && zip -qr "../bili-ip-anchor-desktop-${GITHUB_REF_NAME#v}-windows-${arch}-portable.zip" "Bili IP Anchor.exe" icon.png tray.png)
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Desktop ${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            desktop/build/*/*.dmg
+            desktop/build/*/*-setup-*.exe
+            desktop/build/*-portable.zip
+            desktop/build/*/*.deb
+            desktop/build/*/*.tar.gz
+
+  mobile:
+    uses: ./.github/workflows/mobile.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit
+
+  release:
+    needs: [server, desktop, mobile]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "$GITHUB_REF_NAME"
+        run: |
+          mkdir out
+          find dist -type f -exec cp {} out/ \;
+          cd out && sha256sum * > checksums.txt && ls -l
+          gh release create "$GITHUB_REF_NAME" * \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,46 @@
+# XcodeGen 项目描述：xcodegen generate 生成 BiliIPAnchor.xcodeproj。
+# 先用 gomobile 把 Go 核心编成 Mobile.xcframework：
+#   gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile
+name: BiliIPAnchor
+options:
+  bundleIdPrefix: io.github.vofficial404
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    MARKETING_VERSION: "0.6.0"
+    CURRENT_PROJECT_VERSION: "600"
+targets:
+  BiliIPAnchor:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+      - path: ../mobile/shell/setup.html
+        buildPhase: resources
+    dependencies:
+      - framework: Mobile.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: BiliIPAnchor
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.vofficial404.biliipanchor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
+        OTHER_LDFLAGS: ["-lresolv"]
+        ENABLE_BITCODE: NO
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Bili IP Anchor
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # 本机模式的面板在 127.0.0.1 上走 http；连服务器时也可能是局域网或隧道的 http 地址
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    scheme: {}

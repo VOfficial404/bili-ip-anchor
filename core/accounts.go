@@ -329,15 +329,20 @@ func (acc *account) loop(first time.Duration) {
 	}
 }
 
-// wait 等到下次运行时间或被手动触发；账号被移除时返回 false
+// wait 等到下次运行时间或被手动触发；账号被移除时返回 false。
+// 按墙上时间判断，最多一分钟看一次：电脑或手机休眠时单调时钟会停，只靠它会把这一轮推迟休眠那么久。
 func (acc *account) wait() bool {
 	for {
 		acc.mu.Lock()
-		t := time.NewTimer(time.Until(acc.next))
+		d := time.Until(acc.next.Round(0)) // Round(0) 去掉单调时钟读数，按墙上时间算
 		acc.mu.Unlock()
+		if d <= 0 {
+			return true
+		}
+		t := time.NewTimer(min(d, time.Minute))
 		select {
 		case <-t.C:
-			return true
+			continue
 		case <-acc.trigger:
 			t.Stop()
 			acc.logf("手动触发运行")

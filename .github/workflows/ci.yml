@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -18,8 +18,36 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - run: go vet ./...
-      - run: go build ./...
-      - run: go test ./...
+      - run: go vet . ./core ./mobile
+      - run: go build .
+      - run: go test . ./core ./mobile
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+  # 桌面客户端的界面测试不开窗口，在 Windows 上跑（和大多数用户一样）
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./desktop
+      - run: go tool mygo vet .
+        working-directory: desktop
+      - run: go test ./desktop
+
+  # 只确认三个平台都能编译，不打安装包
+  desktop-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: go tool mygo build -platform windows/amd64,linux/amd64,darwin/arm64 -skip-installer -skip-dmg
+        working-directory: desktop

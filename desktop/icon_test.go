@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"image"
 	"image/png"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -62,5 +64,41 @@ func TestGenerateTrayIcon(t *testing.T) {
 	}
 	if err := os.WriteFile("resources/tray.png", buf.Bytes(), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 手机图标：Android 用和桌面一样的圆角图标，iOS 要不透明的满版方图（系统自己切圆角）
+func TestGenerateMobileIcons(t *testing.T) {
+	if os.Getenv("GEN_ICON") == "" {
+		t.Skip("设置 GEN_ICON=1 才重新生成手机图标")
+	}
+	gradient := ui.LinearGradient{Angle: 160, Oklab: true, From: ui.Hex("#3b82f6"), To: ui.Hex("#1d4ed8")}
+	android := func(c *ui.Context) {
+		th := *c.Theme()
+		th.Background = ui.Transparent
+		c.SetTheme(&th)
+		ui.Box(c).Fill().Center().Children(func() {
+			ui.Box(c).Size(176, 176).Center().Radius(40).LinearGradient(gradient).Children(func() {
+				ui.Icon(c, iconAnchor).Size(112, 112).TextColor(ui.Hex("#ffffff"))
+			})
+		})
+	}
+	ios := func(c *ui.Context) {
+		ui.Box(c).Fill().Center().LinearGradient(gradient).Children(func() {
+			ui.Icon(c, iconAnchor).Size(620, 620).TextColor(ui.Hex("#ffffff"))
+		})
+	}
+	for path, img := range map[string]image.Image{
+		"../android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png":   ui.Render(android, 192, 192, 1),
+		"../ios/Resources/Assets.xcassets/AppIcon.appiconset/icon.png": ui.Render(ios, 1024, 1024, 1),
+	} {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		os.MkdirAll(filepath.Dir(path), 0755)
+		if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -10,3 +10,10 @@ data/
 /dynamic.jpg
 /dynamic.png
 /accounts/
+
+# 桌面客户端（MyGo）
+/desktop/build/
+/desktop/.mygo/
+/desktop/mygo_windows_*.syso
+/desktop/desktop
+/desktop/desktop.exe

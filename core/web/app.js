@@ -233,7 +233,9 @@ function renderZone(s) {
 function renderSide(s) {
   $("conn-dot").className = "dot ok";
   $("conn-text").textContent = `${s.mode === "local" ? "本机运行" : "已连接"} · ${s.version}`;
-  $("conn-host").textContent = location.host;
+  $("conn-host").textContent = s.mode === "local" ? "在这台设备上运行" : location.host;
+  // 本机模式（手机 App）的面板密码是随机的，锁上就进不来了
+  $("signout").hidden = s.mode === "local";
   $("conn-mode-icon").setAttribute("href", s.mode === "local" ? "#i-laptop" : "#i-server");
   let egress = s.zone ? `${s.zone.addr} · ${zoneRegion(s.zone)}` : s.zone_error ? "出口 IP 查询失败" : "出口 IP 查询中";
   if (s.settings.proxy) egress = `经代理 ${egress}`;
