@@ -1,0 +1,128 @@
+name: Mobile
+
+# 构建 Android 的 APK 和 iOS 的 IPA（不签名）。发布时由 release.yml 调用；改动手机相关代码的 PR 也会跑一遍。
+on:
+  pull_request:
+    paths:
+      - "core/**"
+      - "mobile/**"
+      - "android/**"
+      - "ios/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    env:
+      # 可选：在仓库的 Secrets 里设置这几项，APK 用固定的密钥签名，之后可以覆盖安装
+      ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }} # keystore 文件的 base64
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Version
+        id: v
+        run: .github/scripts/version.sh "${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install gomobile
+        run: |
+          ver=$(go list -m -f '{{.Version}}' golang.org/x/mobile)
+          go install golang.org/x/mobile/cmd/gomobile@$ver golang.org/x/mobile/cmd/gobind@$ver
+          gomobile init
+
+      - name: Bind the Go core
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          mkdir -p android/app/libs # gomobile 不会自己建目录；libs/ 不进仓库
+          gomobile bind -target=android/arm64,android/arm,android/amd64 -androidapi 24 \
+            -ldflags "-s -w -X github.com/VOfficial404/bili-ip-anchor/mobile.version=v${{ steps.v.outputs.name }}" \
+            -o android/app/libs/bia.aar ./mobile
+
+      - name: Signing key
+        if: env.ANDROID_KEYSTORE != ''
+        run: |
+          echo "$ANDROID_KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          gradle -p android assembleRelease -PversionName=${{ steps.v.outputs.name }} -PversionCode=${{ steps.v.outputs.code }}
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/bili-ip-anchor-${{ steps.v.outputs.name }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android
+          if-no-files-found: error
+          path: out/*.apk
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Version
+        id: v
+        run: .github/scripts/version.sh "${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install gomobile and XcodeGen
+        run: |
+          ver=$(go list -m -f '{{.Version}}' golang.org/x/mobile)
+          go install golang.org/x/mobile/cmd/gomobile@$ver golang.org/x/mobile/cmd/gobind@$ver
+          gomobile init
+          brew install xcodegen
+
+      - name: Bind the Go core
+        run: |
+          gomobile bind -target=ios \
+            -ldflags "-s -w -X github.com/VOfficial404/bili-ip-anchor/mobile.version=v${{ steps.v.outputs.name }}" \
+            -o ios/Mobile.xcframework ./mobile
+
+      # 没有签名：用 AltStore、SideStore 等工具自己签名安装
+      - name: Build
+        working-directory: ios
+        run: |
+          xcodegen generate
+          xcodebuild -project BiliIPAnchor.xcodeproj -scheme BiliIPAnchor -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/app.xcarchive archive \
+            MARKETING_VERSION=${{ steps.v.outputs.name }} CURRENT_PROJECT_VERSION=${{ steps.v.outputs.code }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          mkdir -p build/Payload ../out
+          cp -R build/app.xcarchive/Products/Applications/*.app build/Payload/
+          (cd build && zip -qry "../../out/bili-ip-anchor-${{ steps.v.outputs.name }}-unsigned.ipa" Payload)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iOS
+          if-no-files-found: error
+          path: out/*.ipa

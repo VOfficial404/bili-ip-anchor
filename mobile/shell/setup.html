@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Bili IP Anchor</title>
+<!-- 手机 App 的第一页：选择连接服务器还是在本机运行。和 WebUI 同一套颜色（core/web/style.css）。
+     原生代码提供 bia(cmd, args)：Android 是 window.BiaAndroid.call，iOS 是 webkit.messageHandlers.bia -->
+<style>
+:root {
+  --bg: #ffffff; --surface: #f4f4f5; --surface-hover: #e9e9ec; --border: #d9d9de;
+  --text: #18181b; --muted: #71717a; --accent: #2563eb; --accent-hover: #1d4ed8; --accent-text: #fff;
+  --danger: #dc2626; --success: #16a34a; --warning: #d97706; --focus: rgb(37 99 235 / 0.55);
+  --radius: 6px; --radius-card: 9px;
+  --sans: system-ui, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181b; --surface: #27272a; --surface-hover: #323236; --border: #3f3f46;
+    --text: #f4f4f5; --muted: #a1a1aa; --accent: #3b82f6; --accent-hover: #60a5fa;
+    --danger: #ef4444; --success: #22c55e; --warning: #f59e0b; --focus: rgb(96 165 250 / 0.6);
+  }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  background: var(--surface); color: var(--text); font: 15px/1.5 var(--sans);
+  padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
+  display: grid; place-items: start center;
+}
+h1, p { margin: 0; }
+[hidden] { display: none !important; }
+.card { width: min(440px, 100%); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 22px; display: grid; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { width: 24px; height: 24px; color: var(--accent); }
+.brand h1 { font-size: 19px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; gap: 3px; border-radius: 8px; background: var(--surface); }
+.seg button { border: 0; background: none; color: var(--text); min-height: 34px; border-radius: 6px; font: inherit; font-size: 14px; }
+.seg button[aria-pressed="true"] { background: var(--bg); box-shadow: 0 1px 2px rgb(0 0 0 / 0.15); font-weight: 600; }
+.field { display: grid; gap: 6px; }
+.field label { font-weight: 500; font-size: 14px; }
+.row { display: flex; gap: 8px; }
+input:not([type="checkbox"]) {
+  font: inherit; font-size: 16px; width: 100%; min-height: 42px; padding: 8px 12px; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text);
+}
+input.mono { font-family: var(--mono); font-size: 15px; }
+input:focus { outline: 3px solid var(--focus); outline-offset: 0; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.check input { width: 18px; height: 18px; accent-color: var(--accent); }
+button.btn {
+  font: inherit; min-height: 42px; padding: 8px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); white-space: nowrap;
+}
+button.btn:active { background: var(--surface-hover); }
+button.primary { background: var(--accent); border-color: transparent; color: var(--accent-text); font-weight: 600; }
+button.primary:active { background: var(--accent-hover); }
+button:disabled { opacity: 0.5; }
+.msg { font-size: 13px; overflow-wrap: anywhere; }
+.msg:empty { display: none; }
+.ok { color: var(--success); }
+.err { color: var(--danger); }
+.warn { color: var(--warning); }
+.running { display: grid; gap: 10px; padding: 12px 14px; border-radius: var(--radius); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.running p:first-child { font-weight: 600; color: var(--success); }
+.foot { text-align: center; font-size: 12px; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><path d="M12 7.5V21M7.5 11h9M4.5 14a7.5 7.5 0 0 0 15 0"/></svg>
+    <h1>Bili IP Anchor</h1>
+  </div>
+
+  <div class="seg" role="group" aria-label="用法">
+    <button type="button" id="tab-remote" aria-pressed="true">连接服务器</button>
+    <button type="button" id="tab-local" aria-pressed="false">在本机运行</button>
+  </div>
+
+  <section id="remote" class="card-body" style="display:grid;gap:14px">
+    <p class="muted small">定时任务在你的云服务器上跑，这里打开它的 WebUI。填服务器的 HTTPS 地址，面板密码在下一页输入。</p>
+    <div class="field">
+      <label for="server">服务器地址</label>
+      <input id="server" type="url" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://bili.example.com">
+    </div>
+    <p class="msg" id="remote-msg"></p>
+    <button type="button" class="btn primary" id="open-remote">打开面板</button>
+  </section>
+
+  <section id="local" hidden style="display:grid;gap:14px">
+    <p class="muted small" id="local-desc">没有服务器也可以用：手机定时以账号身份发请求，经过手机上代理软件的本地端口出去，B 站看到的是代理的出口 IP。看视频不经过它。</p>
+    <div class="running" id="running" hidden>
+      <p>正在本机运行</p>
+      <p class="small muted" id="running-proxy"></p>
+      <div class="row">
+        <button type="button" class="btn primary" id="open-local" style="flex:1">打开面板</button>
+        <button type="button" class="btn" id="stop-local">停止运行</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="proxy">代理</label>
+      <div class="row">
+        <input id="proxy" class="mono" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="http://127.0.0.1:7890">
+        <button type="button" class="btn" id="probe">测试</button>
+      </div>
+      <p class="muted small">代理软件的本地端口（例如 Clash 的混合端口），支持 http:// 和 socks5://。</p>
+    </div>
+    <p class="msg" id="local-msg" role="status"></p>
+    <label class="check" id="auto-wrap"><input type="checkbox" id="auto"> 打开 App 时自动开始运行</label>
+    <button type="button" class="btn primary" id="start-local">开始运行</button>
+  </section>
+
+  <p class="foot muted" id="version"></p>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// bia 调用原生代码，返回对象；出错时对象里有 error
+function bia(cmd, args = {}) {
+  if (window.BiaAndroid) return Promise.resolve(JSON.parse(window.BiaAndroid.call(cmd, JSON.stringify(args))));
+  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bia) {
+    return window.webkit.messageHandlers.bia.postMessage({ cmd, args }).catch((e) => ({ error: String(e) }));
+  }
+  return Promise.resolve({ error: "不在 App 里" });
+}
+
+let state = {};
+
+function setTab(local) {
+  $("tab-remote").setAttribute("aria-pressed", String(!local));
+  $("tab-local").setAttribute("aria-pressed", String(local));
+  $("remote").hidden = local;
+  $("local").hidden = !local;
+}
+$("tab-remote").addEventListener("click", () => setTab(false));
+$("tab-local").addEventListener("click", () => setTab(true));
+
+function msg(id, text, kind) {
+  $(id).textContent = text || "";
+  $(id).className = `msg ${kind || ""}`;
+}
+
+function zonePlace(z) {
+  const parts = z.country === "中国" ? [z.province, z.city] : [z.country, z.province];
+  return [...new Set(parts.filter(Boolean))].join(" ") || "未知地区";
+}
+
+function render() {
+  $("server").value = state.server || "";
+  $("proxy").value = state.proxy || "";
+  $("auto").checked = Boolean(state.autoLocal);
+  $("running").hidden = !state.running;
+  $("running-proxy").textContent = state.running ? `经过 ${state.proxy}` : "";
+  $("start-local").hidden = Boolean(state.running);
+  $("auto-wrap").hidden = Boolean(state.running);
+  $("version").textContent = `bili-ip-anchor ${state.version || ""}`;
+  if (state.platform === "ios") {
+    $("local-desc").textContent += " iPhone 上只有 App 在前台时才会运行；切到后台后定时任务暂停，回到 App 时补上。";
+  }
+  setTab(state.mode === "local" || state.running);
+}
+
+$("open-remote").addEventListener("click", async () => {
+  let s = $("server").value.trim();
+  if (!s) return msg("remote-msg", "请填写服务器地址", "err");
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  let u;
+  try { u = new URL(s); } catch { return msg("remote-msg", "地址不对", "err"); }
+  const local = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u.hostname);
+  if (u.protocol === "http:" && !local) {
+    msg("remote-msg", "这是不加密的 http 地址，面板密码会明文经过网络。建议给服务器配好 HTTPS。再点一次继续。", "warn");
+    if ($("open-remote").dataset.confirm !== s) { $("open-remote").dataset.confirm = s; return; }
+  }
+  $("open-remote").disabled = true;
+  const r = await bia("openRemote", { server: u.origin + u.pathname.replace(/\/+$/, "") });
+  $("open-remote").disabled = false;
+  if (r.error) msg("remote-msg", r.error, "err");
+});
+
+async function probe() {
+  const proxy = $("proxy").value.trim();
+  if (!proxy) { msg("local-msg", "请填写代理地址", "err"); return null; }
+  msg("local-msg", "正在经过代理访问 B 站…", "muted");
+  const z = await bia("probe", { proxy });
+  if (z.error) { msg("local-msg", z.error, "err"); return null; }
+  msg("local-msg", `可用。B 站看到的是 ${zonePlace(z)} · ${z.addr}，主页属地会变成${z.region}。`, "ok");
+  return z;
+}
+$("probe").addEventListener("click", probe);
+
+$("start-local").addEventListener("click", async () => {
+  $("start-local").disabled = true;
+  if (await probe()) {
+    const r = await bia("startLocal", { proxy: $("proxy").value.trim(), auto: $("auto").checked });
+    if (r.error) msg("local-msg", r.error, "err");
+  }
+  $("start-local").disabled = false;
+});
+
+$("open-local").addEventListener("click", () => bia("openLocal"));
+$("stop-local").addEventListener("click", async () => {
+  await bia("stopLocal");
+  state = await bia("state");
+  render();
+  msg("local-msg", "已停止。账号和设置都还在，下次开始运行时接着用。", "muted");
+});
+
+// 从面板返回这一页时，原生代码调用它刷新状态
+window.biaRefresh = async () => { state = await bia("state"); render(); };
+window.biaRefresh();
+</script>
+</body>
+</html>

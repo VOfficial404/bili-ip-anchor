@@ -3,54 +3,65 @@
 [![Docker](https://github.com/VOfficial404/bili-ip-anchor/actions/workflows/docker.yml/badge.svg)](https://github.com/VOfficial404/bili-ip-anchor/actions/workflows/docker.yml)
 [![CI](https://github.com/VOfficial404/bili-ip-anchor/actions/workflows/ci.yml/badge.svg)](https://github.com/VOfficial404/bili-ip-anchor/actions/workflows/ci.yml)
 
-在你自己的云服务器上定时以 B 站账号身份发起少量请求，尝试把个人主页的「IP 属地」锚定到服务器所在地区，**本地不需要挂任何代理**，看视频的流量不经过服务器。支持多个账号同时运行，自带 WebUI，可以在网页上扫码添加账号、查看状态和修改设置。
+定时以 B 站账号身份发起少量请求，尝试把个人主页的「IP 属地」锚定到另一个地区，**看视频的流量不经过它**。三种用法：
+
+- **云服务器（推荐）**：用 Docker 跑在你的服务器上，属地锚定到服务器所在地区，本地不需要挂任何代理。
+- **桌面客户端**：Windows、macOS、Linux。可以遥控服务器，也可以没有服务器、直接在电脑上运行，请求经过电脑上代理软件的本地端口出去。
+- **手机 App**：Android 和 iOS，和桌面客户端一样两种用法。
+
+支持多个账号同时运行。每个账号都能看到主页现在的属地、目标属地、Cookie 有效期和硬币数。
 
 > [!WARNING]
-> - **效果不保证。** B 站没有公开主页 IP 属地依据哪类请求计算。本工具只是让服务器 IP 出现在账号的活动记录里，是否能改变主页显示，需要你按下文「验证是否生效」自行测试。
+> - **效果不保证。** B 站没有公开主页 IP 属地依据哪类请求计算。本工具只是让目标 IP 出现在账号的活动记录里，是否能改变主页显示，需要你按下文「验证是否生效」自行测试。
 > - **本地发布的内容不受影响。** 每条评论、动态的属地按发布时的 IP 记录，你在本地发的内容仍显示本地属地，也可能把主页属地刷回去。
 > - **有风控和违规风险。** B 站社区规则不鼓励刻意伪造属地，自动化请求也可能触发风控。是否使用、后果如何，请自行判断和承担。
 
 ## 工作原理
 
-1. 在服务器上扫码登录一个或多个账号，每个账号得到一份**独立的登录会话**（相当于多了一台登录设备，不用从浏览器复制 Cookie）。
+1. 扫码登录一个或多个账号，每个账号得到一份**独立的登录会话**（相当于多了一台登录设备，不用从浏览器复制 Cookie）。
 2. 之后每个账号**各自排程、同时进行**，每隔一段时间（默认 6 小时 + 0~30 分钟随机抖动）以自己的会话：
-   - 请求 `nav` 接口确认登录状态；
-   - 上报一次视频观看心跳；
-   - （可选，默认关闭）发一条图片动态，几秒后删除。
-3. 这些请求都从服务器发出，B 站记录到的是服务器的 IP。
+   - 请求 `nav` 接口确认登录状态，顺便更新硬币、等级等资料；
+   - 询问 B 站 Cookie 是否需要刷新，需要时自动刷新；
+   - 从心跳视频里随机选一个，上报一次观看心跳；
+   - （可选，默认关闭）发一条动态（文字和/或图片），几秒后删除。
+3. 这些请求都从服务器（或代理）发出，B 站记录到的是那里的 IP。
 
 每轮只有几 KB 流量。
 
-## WebUI
+## 面板
 
-设置了 `WEBUI_PASSWORD` 后，守护进程会同时提供一个网页面板。它的样子和 [MyGo](https://mygo.egoist.dev/) 原生 UI 的默认主题一致，跟桌面客户端看起来一样，并跟随系统的浅色/深色模式。左侧四个页面：
+服务器上设置了 `WEBUI_PASSWORD` 后会提供一个网页面板；桌面客户端和手机 App 的界面是同一套，样子和 [MyGo](https://mygo.egoist.dev/) 原生 UI 的默认主题一致，跟随系统的浅色/深色模式，手机上导航在底部。四个页面：
 
-- **概览**：用 B 站自己的接口查询服务器出口 IP 的归属地和运营商，部署后一眼就能确认服务器会被识别成哪里；以及账号的整体情况。
-- **账号**：扫码添加多个账号。每个账号显示头像、昵称、状态、上次和下次运行时间，可以单独立即运行、重新扫码或退出（退出会在 B 站注销这份会话）；也可以全部立即运行。
-- **设置**：在线修改间隔、随机抖动、心跳视频、是否发动态，所有账号共用，保存后立即生效。
+- **概览**：B 站把出口 IP 识别为哪里（目标属地），有几个账号的主页已经是目标属地，下一次运行时间。
+- **账号**：每个账号一张卡片：
+  - 头像、昵称、等级、大会员、硬币和 B 币；
+  - **主页属地**：主页现在显示的属地，是否已是目标属地、从什么时候起一致；还不是时显示预计什么时候变（B 站没有公开规则，只能说「下一轮之后几小时内」）。需要先「授权查询」，见下文；
+  - **目标属地**：出口 IP、地区和运营商；
+  - **运行**：下次运行时间、上次结果、上次成功从目标 IP 发出请求的时间；
+  - **Cookie**：还有多少天过期，可以「刷新 Cookie」；
+  - 立即运行、刷新资料（不发心跳）、重新扫码、退出（会在 B 站注销这份会话）。
+- **设置**：所有账号共用，保存后立即生效：
+  - 间隔、随机抖动；
+  - 代理，可以「测试」看 B 站经过它识别为哪里；
+  - 心跳视频：可以添加多个，粘贴 BV 号或视频链接，会显示标题、封面、UP 主和时长；
+  - 动态：开关、文字、最多 9 张图片，并预览每轮会发什么。
 - **日志**：最近 300 行运行日志，每行带账号名。
 
-### 桌面客户端
+侧边栏底部显示连的是哪里（面板地址或「本机运行」）以及 B 站看到的出口 IP。
 
-不想开浏览器，可以用 [bili-ip-anchor-desktop](https://github.com/VOfficial404/bili-ip-anchor-desktop)：用 MyGo 写的 Windows、macOS、Linux 桌面程序，功能和网页面板相同，连的也是这个 WebUI（地址和面板密码同下）。定时任务仍然在服务器上跑。
+### 主页属地查询（可选）
 
-面板只用密码保护，并且是明文 HTTP，所以 Compose 默认**只监听服务器本机** `127.0.0.1:8080`。从自己电脑访问有两种方式：
+B 站的网页接口查不到账号主页显示的 IP 属地，只有 App 接口能查。在账号卡片上点「授权查询」，用**同一个账号**的 B 站 App 再扫一次码，就会得到一份 App 授权（相当于多一台「电视」登录设备），之后每轮顺便查一次主页属地。
 
-**SSH 隧道（最简单）**：在自己电脑上执行下面的命令，然后打开 <http://localhost:8080>。
+这份授权只用来查询主页属地，保存在 `accounts/<UID>/session.json`。点「取消授权」或「退出」账号时会在 B 站撤销它。不授权也不影响定时任务，只是看不到主页属地。
 
-```bash
-ssh -N -L 8080:127.0.0.1:8080 root@你的服务器IP
-```
+### Cookie 有效期和刷新
 
-**HTTPS 反向代理（有域名时）**：例如 Caddy，会自动申请证书：
+扫码登录时会同时保存 Cookie 的过期时间和 `refresh_token`。每轮运行时询问 B 站 Cookie 是否需要刷新，需要就自动换一份新的（流程见 [bilibili-API-collect 的说明](https://socialsisteryi.github.io/bilibili-API-collect/docs/login/cookie_refresh.html)），也可以在账号卡片上手动「刷新 Cookie」。
 
-```
-bili.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
+v0.5 及更早版本扫码的账号没有 `refresh_token`，面板上显示「有效期未知」，重新扫码一次之后就能看到有效期并刷新。
 
-## 快速开始（Docker Compose，推荐）
+## 云服务器：快速开始（Docker Compose）
 
 服务器需要已安装 Docker 和 Compose 插件。
 
@@ -60,7 +71,7 @@ curl -fsSLO https://raw.githubusercontent.com/VOfficial404/bili-ip-anchor/main/c
 curl -fsSL -o .env https://raw.githubusercontent.com/VOfficial404/bili-ip-anchor/main/.env.example
 ```
 
-**1. 设置 WebUI 密码**（不需要 WebUI 可以跳过）：
+**1. 设置面板密码**（不需要面板可以跳过）：
 
 ```bash
 sed -i "s|^WEBUI_PASSWORD=.*|WEBUI_PASSWORD=$(openssl rand -base64 18)|" .env && grep WEBUI_PASSWORD .env
@@ -74,18 +85,32 @@ sed -i "s|^WEBUI_PASSWORD=.*|WEBUI_PASSWORD=$(openssl rand -base64 18)|" .env &&
 docker compose up -d
 ```
 
-**3. 扫码添加账号**，二选一，想加几个账号就重复几次：
+**3. 打开面板。** 面板只用密码保护，并且是明文 HTTP，所以 Compose 默认**只监听服务器本机** `127.0.0.1:8080`。从自己电脑访问有两种方式：
 
-- 用 WebUI：按上面的方法打开面板，点「添加账号」。
+- **SSH 隧道（最简单）**：在自己电脑上执行下面的命令并保持打开，然后打开 <http://localhost:8080>，或在桌面客户端里填这个地址。
+
+  ```bash
+  ssh -N -L 8080:127.0.0.1:8080 root@你的服务器IP
+  ```
+
+- **HTTPS 反向代理（有域名时，手机 App 连服务器也用它）**：例如 Caddy，会自动申请证书：
+
+  ```
+  bili.example.com {
+      reverse_proxy 127.0.0.1:8080
+  }
+  ```
+
+**4. 扫码添加账号**，二选一，想加几个账号就重复几次：
+
+- 在面板里点「添加账号」。
 - 用终端（终端里会显示二维码）：
 
   ```bash
   docker compose run --rm bili-ip-anchor login
   ```
 
-每个账号的会话保存在 `./data/accounts/<UID>/`。WebUI 添加的账号立即开始运行；终端添加的账号，守护进程会在 1 分钟内自动接上，不需要重启。同一个账号再扫一次，会更新它的会话。
-
-> 从 v0.3 及更早版本升级：旧的 `./data/cookies.json` 会在启动时自动迁移到 `./data/accounts/<UID>/`，不需要重新扫码。
+每个账号的会话保存在 `./data/accounts/<UID>/`。面板里添加的账号立即开始运行；终端添加的账号，守护进程会在 1 分钟内自动接上，不需要重启。同一个账号再扫一次，会更新它的会话。
 
 **查看日志：**
 
@@ -96,26 +121,29 @@ docker compose logs -f
 正常的话会看到：
 
 ```
-2026/11/01 12:00:00 bili-ip-anchor v0.5.0 守护模式启动：间隔 6h，随机抖动 30m，数据目录 /data
-2026/11/01 12:00:00 已加载 2 个账号，各自独立排程
-2026/11/01 12:00:00 WebUI 监听 :8080
-2026/11/01 12:00:01 [你的昵称] 登录正常：你的昵称
-2026/11/01 12:00:01 [你的昵称] 心跳：0 0
-2026/11/01 12:00:01 [你的昵称] 下一轮：2026-11-01 18:12:37
-2026/11/01 12:00:16 [另一个号] 登录正常：另一个号
+2026/11/03 12:00:00 bili-ip-anchor v0.6.0 启动：间隔 6h，随机抖动 30m，直连，数据目录 /data
+2026/11/03 12:00:00 已加载 2 个账号，各自独立排程
+2026/11/03 12:00:00 WebUI 监听 :8080
+2026/11/03 12:00:01 [你的昵称] 登录正常
+2026/11/03 12:00:01 [你的昵称] 心跳 BV15HFVz1EvM：0 0
+2026/11/03 12:00:01 [你的昵称] 主页属地：广东
+2026/11/03 12:00:01 [你的昵称] 下一轮：2026-11-03 18:12:37
+2026/11/03 12:00:16 [另一个号] 登录正常
 ```
 
 启动时各账号的第一轮会错开十几秒，之后各自按间隔加随机抖动运行。日志出现「登录已失效」时，给那个账号重新扫码即可，不需要重启。
 
-**更新镜像：**
+**更新：**
 
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-## 不用 Docker：直接运行二进制
+> 从旧版本升级不需要重新扫码：v0.3 及更早的 `data/cookies.json` 会迁移到 `data/accounts/<UID>/`；v0.5 的 `settings.json` 里的 `bvid` 会变成视频列表；数据目录里的 `dynamic.jpg`、`dynamic.png` 会移到动态图片里。
 
-从 [Releases](https://github.com/VOfficial404/bili-ip-anchor/releases) 下载对应架构的文件（服务器上执行 `uname -m`：`x86_64` 选 `linux_amd64`，`aarch64` 选 `linux_arm64`）。
+### 不用 Docker：直接运行二进制
+
+从 [Releases](https://github.com/VOfficial404/bili-ip-anchor/releases) 下载对应架构的 `bili-ip-anchor_linux_*`（服务器上执行 `uname -m`：`x86_64` 选 `linux_amd64`，`aarch64` 选 `linux_arm64`）。
 
 ```bash
 mkdir -p /opt/bili-ip-anchor && cd /opt/bili-ip-anchor
@@ -127,7 +155,7 @@ chmod +x bili-ip-anchor
 然后二选一：
 
 - **常驻运行**（推荐配合 systemd，见下）：`WEBUI_PASSWORD=你的密码 WEBUI_ADDR=127.0.0.1:8080 ./bili-ip-anchor daemon`
-- **交给 cron**（没有 WebUI）：`crontab -e` 加入
+- **交给 cron**（没有面板）：`crontab -e` 加入
 
   ```
   0 */6 * * * /opt/bili-ip-anchor/bili-ip-anchor refresh >> /opt/bili-ip-anchor/refresh.log 2>&1
@@ -135,7 +163,7 @@ chmod +x bili-ip-anchor
 
   `refresh` 不加 `--now` 时会先随机等待 0~`JITTER`。
 
-不设 `DATA_DIR` 时，`accounts/` 和 `settings.json` 保存在二进制所在目录。再运行一次 `login` 可以添加更多账号；`refresh` 会为所有账号各跑一轮。
+不设 `DATA_DIR` 时，`accounts/`、`dynamic/` 和 `settings.json` 保存在二进制所在目录。再运行一次 `login` 可以添加更多账号；`refresh` 会为所有账号各跑一轮。
 
 <details>
 <summary>systemd 服务示例</summary>
@@ -166,61 +194,128 @@ systemctl daemon-reload && systemctl enable --now bili-ip-anchor
 
 </details>
 
-## 配置
+## 桌面客户端
+
+从 [Releases](https://github.com/VOfficial404/bili-ip-anchor/releases/latest) 下载：
+
+| 系统 | 文件 |
+|---|---|
+| Windows | `bili-ip-anchor-desktop-setup-*-amd64.exe`（安装包），或 `*-windows-amd64-portable.zip`（免安装，解压即用） |
+| macOS | `bili-ip-anchor-desktop-*.dmg`（Intel 和 Apple 芯片通用） |
+| Linux | `.deb` 包，或 `.tar.gz`（解压后运行 `install.sh` 为当前用户安装） |
+
+安装包还没有签名：Windows 可能弹出 SmartScreen 提示，点「更多信息 → 仍要运行」；macOS 第一次打开时在 Finder 里右键 → 打开。
+
+打开后选择用法：
+
+- **连接服务器**：填面板地址（SSH 隧道时是 `http://127.0.0.1:8080`）和面板密码。勾选「记住密码」后，密码保存在系统的凭据管理器里（Windows 凭据管理器、macOS 钥匙串、Linux 的 Secret Service），下次打开自动连接。服务器需要 v0.4.0 或更新版本；账号详情、多个视频、动态内容、代理需要服务器 v0.6.0。
+- **在本机运行**：没有服务器时用。填电脑上代理软件的本地端口（例如 Clash 的 `http://127.0.0.1:7890`，也支持 `socks5://`），点「测试」可以看 B 站经过它把你识别为哪里，主页属地就会变成那里。只有本程序以账号身份发出的请求经过这个代理，你自己看视频不经过它。关闭窗口后程序在托盘里继续运行，托盘菜单可以重新打开或退出。账号和设置保存在系统的应用数据目录里。
+
+账号头像和视频封面由客户端直接从 B 站图床（`*.hdslb.com`）下载，只用来显示，不带任何账号信息，也不影响 IP 属地。
+
+## 手机 App
+
+从 [Releases](https://github.com/VOfficial404/bili-ip-anchor/releases/latest) 下载：
+
+- **Android**：`bili-ip-anchor-*.apk`，Android 7.0 及以上。
+- **iOS**：`bili-ip-anchor-*-unsigned.ipa`，没有签名，需要用 [AltStore](https://altstore.io/)、[SideStore](https://sidestore.io/) 之类的工具用你自己的 Apple ID 签名安装。iOS 16 及以上。
+
+打开后和桌面客户端一样选择用法：
+
+- **连接服务器**：填面板的 HTTPS 地址，在下一页输入面板密码。
+- **在本机运行**：填手机上代理软件的本地端口（例如 Clash Meta for Android 的混合端口 `http://127.0.0.1:7890`）。
+  - **Android** 会显示一条「正在本机运行」的常驻通知，App 退到后台后定时任务继续跑。手机深度休眠时可能推迟到下次唤醒再运行。
+  - **iOS** 不允许 App 在后台一直运行：只有 App 在前台时才会运行，切回 App 时补上错过的那一轮。iPhone 更适合用来连服务器。
+
+在面板里按返回键（Android）或点左上角「首页」（iOS）回到第一页，可以换服务器或停止本机运行。
+
+> GitHub 上构建的 APK 在没有配置签名密钥时用临时的调试密钥签名，新版本覆盖安装可能提示签名不一致，卸载旧版再装即可（本机模式的账号需要重新扫码）。
+
+## 配置（服务器）
 
 全部通过环境变量配置。用 Compose 时修改 `.env`（模板见 [`.env.example`](.env.example)）。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `WEBUI_PASSWORD` | 空 | 设置后启用 WebUI。建议用 `openssl rand -base64 18` 生成 |
-| `WEBUI_ADDR` | `:8080` | WebUI 监听地址（容器内）。二进制直接运行时建议设为 `127.0.0.1:8080` |
+| `WEBUI_PASSWORD` | 空 | 设置后启用面板。建议用 `openssl rand -base64 18` 生成 |
+| `WEBUI_ADDR` | `:8080` | 面板监听地址（容器内）。二进制直接运行时建议设为 `127.0.0.1:8080` |
 | `WEBUI_PORT` | `8080` | 仅 Compose：映射到服务器本机的端口 |
 | `INTERVAL` | `6h` | 每轮间隔，Go duration 格式，如 `90m`、`12h`，最少 `10m` |
 | `JITTER` | `30m` | 每轮额外随机等待 0~JITTER，避免时间过于规律 |
-| `BVID` | `BV15HFVz1EvM` | 心跳上报使用的视频，任意公开视频即可 |
-| `DO_DYNAMIC` | `false` | 每轮发一条图片动态再删除。只发心跳不生效时再打开；动态会短暂出现在粉丝的动态流里。图片见下文「动态图片」 |
-| `DATA_DIR` | 镜像内 `/data`；二进制为所在目录 | `accounts/`（各账号会话）、`settings.json` 存放位置 |
+| `BVIDS` | `BV15HFVz1EvM` | 心跳视频，每轮随机选一个，多个用逗号分隔，任意公开视频即可。旧的 `BVID` 仍然有效 |
+| `DO_DYNAMIC` | `false` | 每轮发一条动态再删除。只发心跳不生效时再打开；动态会短暂出现在粉丝的动态流里 |
+| `DYNAMIC_TEXT` | 空 | 动态的文字。图片在面板的设置页上传 |
+| `PROXY` | 空 | 所有 B 站请求经过的代理（`http://`、`socks5://`），空表示直连 |
+| `DATA_DIR` | 镜像内 `/data`；二进制为所在目录 | `accounts/`（各账号会话）、`dynamic/`（动态图片）、`settings.json` 存放位置 |
 | `TZ` | `Asia/Shanghai` | 日志时区 |
 
-`INTERVAL`、`JITTER`、`BVID`、`DO_DYNAMIC` 在 WebUI 里保存过之后，以 `data/settings.json` 为准，环境变量不再生效。想恢复用环境变量，删除这个文件并重启即可。
+`INTERVAL`、`JITTER`、`BVIDS`、`DO_DYNAMIC`、`DYNAMIC_TEXT`、`PROXY` 在面板里保存过之后，以 `data/settings.json` 为准，环境变量不再生效。想恢复用环境变量，删除这个文件并重启即可。
 
-## 动态图片
+### 动态内容
 
-打开 `DO_DYNAMIC` 后，每轮发的动态内容是一张图片，没有文字。默认使用仓库里的 [`assets/dynamic.jpg`](assets/dynamic.jpg)（已打包进程序）。
+打开「发动态」后，每轮发一条动态，几秒后删掉：
 
-想换成别的图片，把 `dynamic.jpg` 或 `dynamic.png` 放进数据目录（Compose 下是 `./data/`），下一轮就会用它，不需要重启。
+- 有文字和/或图片时，发你设置的内容。图片在面板的设置页上传，最多 9 张，每张不超过 10 MB，支持 JPG、PNG、GIF、WebP，保存在 `data/dynamic/`。
+- 文字和图片都没有时，发一张内置图片 [`core/assets/dynamic.jpg`](core/assets/dynamic.jpg)。
 
 ## 验证是否生效
 
-1. 用浏览器**无痕窗口、不登录**打开你的个人空间，记下当前属地。不要用已登录的浏览器看，那本身就是一次从本地 IP 发出的请求。
+1. 最方便的是在账号卡片上「授权查询」，直接看主页属地。不授权的话，用浏览器**无痕窗口、不登录**打开你的个人空间，记下当前属地。不要用已登录的浏览器看，那本身就是一次从本地 IP 发出的请求。
 2. 测试期间本地尽量不打开 B 站。
-3. 在 WebUI 点「立即运行」，或执行 `docker compose run --rm bili-ip-anchor refresh --now`。
-4. 隔几小时到一天，再用无痕窗口查看：
-   - 变成服务器所在地：只发心跳就够了，保持默认配置。
-   - 没变：在 WebUI 里勾选「发动态」（或在 `.env` 设 `DO_DYNAMIC=true`），再测一轮。
-   - 仍没变：说明 B 站只按登录或发布内容时的 IP 计算，这个方案不适用。可以改用「只把 B 站接口域名分流到服务器代理、视频 CDN 直连」的方式。
+3. 在面板点「立即运行」，或执行 `docker compose run --rm bili-ip-anchor refresh --now`。
+4. 隔几小时到一天，再看一次：
+   - 变成目标属地：只发心跳就够了，保持默认配置。
+   - 没变：在设置里打开「发动态」（或在 `.env` 设 `DO_DYNAMIC=true`），再测一轮。
+   - 仍没变：说明 B 站只按登录或发布内容时的 IP 计算，这个方案不适用。可以改用「只把 B 站接口域名分流到代理、视频 CDN 直连」的方式。
 
 ## 安全
 
-- `accounts/` 里的 `cookies.json` 等同于账号登录权限。保护好服务器，不要把 `data/` 目录提交到任何地方（仓库的 `.gitignore` 已排除）。
-- WebUI 能扫码登录、退出你的账号。不要把它不加 HTTPS 直接暴露到公网，密码用足够长的随机字符串。
-- 不想用了：在 WebUI 里对每个账号点「退出」（或删除 `data/` 目录后到 B 站「账号安全 → 登录设备」里把这台服务器下线），再删除容器。
+- `accounts/` 里的 `cookies.json` 和 `session.json` 等同于账号登录权限。保护好服务器，不要把 `data/` 目录提交到任何地方（仓库的 `.gitignore` 已排除）。
+- 面板能扫码登录、退出你的账号。不要把它不加 HTTPS 直接暴露到公网，密码用足够长的随机字符串。
+- 桌面客户端和手机 App 的本机模式只在 `127.0.0.1` 上开面板，密码每次启动随机生成。
+- 不想用了：在面板里对每个账号点「退出」（会在 B 站注销会话、撤销 App 授权），再删除容器或 App。直接删除数据的话，到 B 站「账号安全 → 登录设备」里把对应设备下线。
 
 ## 从源码构建
 
 ```bash
 git clone https://github.com/VOfficial404/bili-ip-anchor.git && cd bili-ip-anchor
-go test ./... && go build -o bili-ip-anchor .
-# 或者构建镜像
+go test ./...
+go build -o bili-ip-anchor .   # 服务器
 docker build -t bili-ip-anchor .
 ```
 
-WebUI 的页面在 `web/` 目录，编译时通过 `go:embed` 打包进二进制，运行时不需要额外文件。
+目录：
 
-镜像由 GitHub Actions 自动构建并发布到 `ghcr.io/vofficial404/bili-ip-anchor`（`linux/amd64`、`linux/arm64`）：
+| 目录 | 内容 |
+|---|---|
+| `core/` | 核心：账号会话、排程、B 站接口和面板（`core/web/`，编译时用 `go:embed` 打包） |
+| `.`（`main.go`） | 服务器命令行：`login`、`refresh`、`daemon` |
+| `desktop/` | 桌面客户端，用 [MyGo](https://mygo.egoist.dev/) 写成，不需要 cgo，任何系统上都能交叉编译三个平台 |
+| `mobile/` | 手机 App 的 Go 接口，用 gomobile 编译；`mobile/shell/setup.html` 是两个 App 共用的第一页 |
+| `android/`、`ios/` | 手机 App 的外壳：Kotlin 和 Swift，界面用 WebView 打开面板 |
 
-- 推送到 `main`：更新 `latest` 标签
-- 推送 `v*` 标签：发布版本号标签，并在 Releases 附上各平台二进制
+桌面客户端：
+
+```bash
+cd desktop
+go tool mygo dev                                    # 开发：改代码自动重启
+go tool mygo build -platform windows/amd64          # 打包到 desktop/build/windows-amd64/
+```
+
+- `go test ./desktop` 会在没有窗口的情况下跑界面测试（用模拟的服务器和 B 站接口），包括本机模式。设置 `SNAPSHOT_DIR=某个目录` 会把每个页面的截图存成 PNG。
+- 连一台真的服务器测一遍：`BIA_SERVER=http://127.0.0.1:8080 BIA_PASSWORD=你的密码 go test ./desktop -run TestLiveServer`。
+- 图标也是用 MyGo 画的：`GEN_ICON=1 go test ./desktop -run 'TestGenerate'` 重新生成桌面、托盘和手机图标。
+- 想不登录账号看看面板：`DEMO_ADDR=127.0.0.1:8099 go test ./core -run TestServeDemo -timeout 0`，用模拟数据启动面板，密码见 `core/demo_test.go`。
+
+手机 App（需要 Android SDK 和 NDK，或 Xcode；步骤见 [`.github/workflows/mobile.yml`](.github/workflows/mobile.yml)）：
+
+```bash
+go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobind@latest && gomobile init
+gomobile bind -target=android -androidapi 24 -o android/app/libs/bia.aar ./mobile && gradle -p android assembleRelease
+gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile && (cd ios && xcodegen generate)   # 然后用 Xcode 打开
+```
+
+镜像由 GitHub Actions 自动构建并发布到 `ghcr.io/vofficial404/bili-ip-anchor`（`linux/amd64`、`linux/arm64`）。推送到 `main` 更新 `latest` 标签；推送 `v*` 标签时发布版本号标签，并在同一个 Release 里附上服务器二进制、桌面安装包、APK 和 IPA（标签要和 `desktop/mygo.json` 的 `version` 一致）。
 
 ## 致谢
 
@@ -228,4 +323,4 @@ WebUI 的页面在 `web/` 目录，编译时通过 `go:embed` 打包进二进制
 
 ## 许可
 
-[MIT](LICENSE)。`assets/dynamic.jpg` 不在 MIT 许可范围内，版权归原作者所有。本项目与哔哩哔哩官方无关。
+[MIT](LICENSE)。`core/assets/dynamic.jpg` 不在 MIT 许可范围内，版权归原作者所有。本项目与哔哩哔哩官方无关。

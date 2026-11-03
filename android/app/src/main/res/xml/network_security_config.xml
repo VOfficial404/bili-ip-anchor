@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 本机模式的面板在 127.0.0.1 上走 http；连服务器时用户也可能填局域网或隧道的 http 地址，
+     第一页会对非本地的 http 地址提示风险 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

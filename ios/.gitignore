@@ -1,0 +1,5 @@
+# xcodegen generate 和 gomobile bind 生成
+BiliIPAnchor.xcodeproj/
+Mobile.xcframework/
+Resources/Info.plist
+build/
