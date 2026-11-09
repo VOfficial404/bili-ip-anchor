@@ -82,7 +82,7 @@ func (e *Engine) checkCookie(acc *account, c *biliClient, force bool) (bool, err
 		if force {
 			return false, errNoRefreshToken
 		}
-		acc.logf("B 站提示 Cookie 需要刷新，但这个账号没有 refresh_token，请重新扫码登录")
+		acc.warnf("B 站提示 Cookie 需要刷新，但这个账号没有 refresh_token，请重新扫码登录")
 		return false, nil
 	}
 	ts := info.Data.Timestamp
@@ -106,12 +106,12 @@ func (e *Engine) checkCookie(acc *account, c *biliClient, force bool) (bool, err
 	}
 	// 旧 Cookie 在确认之后才失效，新 Cookie 已经保存，确认失败也不影响使用
 	if err := confirmRefresh(newClient(c.http.Transport, cookies), sess.RefreshToken); err != nil {
-		acc.logf("确认 Cookie 刷新失败（新 Cookie 已经可用）：%v", err)
+		acc.warnf("确认 Cookie 刷新失败（新 Cookie 已经可用）：%v", err)
 	}
 	if expires.IsZero() {
-		acc.logf("Cookie 已刷新")
+		acc.infof("Cookie 已刷新")
 	} else {
-		acc.logf("Cookie 已刷新，有效期到 %s", expires.Format("2006-01-02"))
+		acc.infof("Cookie 已刷新，有效期到 %s", expires.Format("2006-01-02"))
 	}
 	return true, nil
 }

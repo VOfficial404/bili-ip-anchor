@@ -90,7 +90,7 @@ func TestPostDynamic(t *testing.T) {
 			}
 			f := &fakeDynamic{t: t}
 			c := newClient(f, map[string]string{"SESSDATA": "s", "bili_jct": "tok"})
-			if err := e.postAndRemoveDynamic(c, "tok", tc.text, t.Logf); err != nil {
+			if err := e.postAndRemoveDynamic(c, "tok", tc.text, e.newAccount("1")); err != nil {
 				t.Fatal(err)
 			}
 			if len(f.uploaded) != tc.wantUpload {

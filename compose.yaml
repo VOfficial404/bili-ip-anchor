@@ -14,6 +14,7 @@ services:
       DO_DYNAMIC: ${DO_DYNAMIC:-false}
       DYNAMIC_TEXT: ${DYNAMIC_TEXT:-}
       PROXY: ${PROXY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       # 设置后启用 WebUI；留空则只在后台定时运行
       WEBUI_PASSWORD: ${WEBUI_PASSWORD:-}
     ports:

@@ -21,8 +21,6 @@ var (
 	errLoggedOut = errors.New("登录已失效，请重新扫码登录")
 )
 
-type logFunc func(format string, args ...any)
-
 type apiResp struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -31,6 +29,7 @@ type apiResp struct {
 type biliClient struct {
 	http    *http.Client
 	cookies map[string]string
+	debugf  func(format string, args ...any) // 每个请求记一条 debug 日志，可以为 nil
 }
 
 // transport 按代理地址缓存，换代理时用新的连接池
@@ -50,7 +49,9 @@ func (e *Engine) transport(proxy string) *http.Transport {
 
 // client 返回以账号身份请求 B 站的客户端，按当前设置走代理
 func (e *Engine) client(cookies map[string]string) *biliClient {
-	return newClient(e.roundTripper(e.Settings().Proxy), cookies)
+	c := newClient(e.roundTripper(e.Settings().Proxy), cookies)
+	c.debugf = e.Debugf
+	return c
 }
 
 // anonClient 不带账号，用于查询出口 IP、视频信息等
@@ -118,13 +119,23 @@ func (c *biliClient) raw(req *http.Request) (*http.Response, []byte, error) {
 	for k, v := range c.cookies {
 		req.AddCookie(&http.Cookie{Name: k, Value: v})
 	}
+	start := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.logRequest(req, start, "%v", err)
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	c.logRequest(req, start, "HTTP %d，%d 字节", resp.StatusCode, len(body))
 	return resp, body, err
+}
+
+// logRequest 记一条 debug 日志。只记主机和路径，查询参数里可能有 access_key 等凭据，不记。
+func (c *biliClient) logRequest(req *http.Request, start time.Time, format string, args ...any) {
+	if c.debugf != nil {
+		c.debugf("%s %s%s：%s（%d ms）", req.Method, req.URL.Host, req.URL.Path, fmt.Sprintf(format, args...), time.Since(start).Milliseconds())
+	}
 }
 
 type navData struct {
@@ -189,13 +200,18 @@ func (e *Engine) runAccount(acc *account, s Settings) error {
 		return err
 	}
 	c := e.client(cookies)
+	where := "直连"
+	if s.Proxy != "" {
+		where = "经代理 " + redactProxy(s.Proxy)
+	}
+	acc.debugf("开始一轮：%s，%d 个候选视频，发动态 %v", where, len(s.Videos), s.DoDynamic)
 	if err := acc.navAndSave(c); err != nil {
 		return err
 	}
-	acc.logf("登录正常")
+	acc.infof("登录正常")
 
 	if refreshed, err := e.checkCookie(acc, c, false); err != nil {
-		acc.logf("检查 Cookie 失败：%v", err)
+		acc.warnf("检查 Cookie 失败：%v", err)
 	} else if refreshed {
 		if cookies, err = e.loadAccountCookies(acc.mid); err != nil {
 			return err
@@ -212,15 +228,15 @@ func (e *Engine) runAccount(acc *account, s Settings) error {
 	}, nil, &hb); err != nil {
 		return err
 	}
-	acc.logf("心跳 %s：%d %s", bvid, hb.Code, hb.Message)
 	if hb.Code != 0 {
 		return fmt.Errorf("心跳被拒绝：%d %s", hb.Code, hb.Message)
 	}
+	acc.infof("心跳 %s：%d %s", bvid, hb.Code, hb.Message)
 	now := time.Now()
 	acc.updateProfile(func(p *profile) { p.LastOK = &now })
 
 	if s.DoDynamic {
-		if err := e.postAndRemoveDynamic(c, cookies["bili_jct"], s.DynamicText, acc.logf); err != nil {
+		if err := e.postAndRemoveDynamic(c, cookies["bili_jct"], s.DynamicText, acc); err != nil {
 			return err
 		}
 	}
@@ -241,7 +257,7 @@ func (e *Engine) checkAccount(acc *account) error {
 		c := e.client(cookies)
 		if err = acc.navAndSave(c); err == nil {
 			if _, cerr := e.checkCookie(acc, c, false); cerr != nil {
-				acc.logf("检查 Cookie 失败：%v", cerr)
+				acc.warnf("检查 Cookie 失败：%v", cerr)
 			}
 		}
 	}
@@ -252,7 +268,7 @@ func (e *Engine) checkAccount(acc *account) error {
 	if e.loadSession(acc.mid).AccessKey != "" {
 		e.checkHome(acc)
 	}
-	acc.logf("已刷新资料")
+	acc.infof("已刷新资料")
 	return nil
 }
 

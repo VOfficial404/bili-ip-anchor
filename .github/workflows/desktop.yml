@@ -1,0 +1,85 @@
+name: Desktop
+
+# 打包桌面客户端（Windows、macOS、Linux）。推送到 main 和改动相关代码的 PR 会构建一遍，
+# 安装包在这次运行的 Artifacts 里下载；发布时由 release.yml 调用。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "core/**"
+      - "desktop/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS, os: macos-latest, platform: "darwin/universal" }
+          # MyGo 不需要 cgo，Windows 版在 Ubuntu 上交叉编译，用 NSIS 打安装包
+          - { name: Windows, os: ubuntu-latest, platform: "windows/amd64,windows/arm64" }
+          - { name: Linux, os: ubuntu-latest, platform: "linux/amd64,linux/arm64" }
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check the version matches the tag
+        if: inputs.version != ''
+        env:
+          TAG: ${{ inputs.version }}
+        run: |
+          want="${TAG#v}"
+          have="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' mygo.json)"
+          if [ "$want" != "$have" ]; then
+            echo "desktop/mygo.json 的 version 是 $have，标签是 $TAG" >&2
+            exit 1
+          fi
+
+      - name: Install NSIS
+        if: matrix.name == 'Windows'
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
+      - name: Build
+        run: go tool mygo build -platform "${{ matrix.platform }}"
+
+      - name: Zip the portable Windows apps
+        if: matrix.name == 'Windows'
+        run: |
+          version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' mygo.json)"
+          for dir in build/windows-*; do
+            arch="${dir#build/windows-}"
+            (cd "$dir" && zip -qr "../bili-ip-anchor-desktop-${version}-windows-${arch}-portable.zip" "Bili IP Anchor.exe" icon.png tray.png)
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Desktop ${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            desktop/build/*/*.dmg
+            desktop/build/*/*-setup-*.exe
+            desktop/build/*-portable.zip
+            desktop/build/*/*.deb
+            desktop/build/*/*.tar.gz

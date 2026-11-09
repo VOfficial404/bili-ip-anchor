@@ -173,7 +173,7 @@ func (e *Engine) pollQR() (QRState, string, error) {
 		return st, "", err
 	}
 	if st == QRSuccess {
-		e.Logf("扫码登录成功：UID %s", mid)
+		e.Infof("扫码登录成功：UID %s", mid)
 		e.accountLoggedIn(mid)
 	}
 	return st, mid, nil
@@ -288,7 +288,7 @@ func (e *Engine) tvPoll(mid string) (QRState, error) {
 	}); err != nil {
 		return QRNone, err
 	}
-	acc.logf("已授权查询主页属地")
+	acc.infof("已授权查询主页属地")
 	go e.checkHome(acc)
 	return QRSuccess, nil
 }
@@ -304,13 +304,13 @@ func (e *Engine) removeAppAuth(mid string) error {
 		return nil
 	}
 	if err := revokeAccessKey(e.anonClient(), sess.AccessKey); err != nil {
-		acc.logf("撤销 App 授权失败（本地仍会删除）：%v", err)
+		acc.warnf("撤销 App 授权失败（本地仍会删除）：%v", err)
 	}
 	if err := e.updateSession(mid, func(s *session) { s.AccessKey, s.AccessExpires = "", time.Time{} }); err != nil {
 		return err
 	}
 	acc.updateProfile(func(p *profile) { p.Home = nil })
-	acc.logf("已取消主页属地授权")
+	acc.infof("已取消主页属地授权")
 	return nil
 }
 
@@ -361,10 +361,10 @@ func (e *Engine) checkHome(acc *account) {
 		p.Home = h
 	})
 	if err != nil {
-		acc.logf("查询主页属地失败：%v", err)
+		acc.warnf("查询主页属地失败：%v", err)
 		return
 	}
-	acc.logf("主页属地：%s", text)
+	acc.infof("主页属地：%s", text)
 }
 
 func sameRegion(home, target string) bool {

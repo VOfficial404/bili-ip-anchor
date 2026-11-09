@@ -162,18 +162,18 @@ func (e *Engine) migrateLegacyCookies() {
 	}
 	var cookies map[string]string
 	if err := json.Unmarshal(b, &cookies); err != nil {
-		e.Logf("旧的 %s 无法解析，没有迁移：%v", legacy, err)
+		e.Warnf("旧的 %s 无法解析，没有迁移：%v", legacy, err)
 		return
 	}
 	mid, err := e.saveAccountCookies(cookies)
 	if err != nil {
-		e.Logf("旧的 %s 没有迁移：%v", legacy, err)
+		e.Warnf("旧的 %s 没有迁移：%v", legacy, err)
 		return
 	}
 	if err := os.Remove(legacy); err != nil {
-		e.Logf("删除旧的 %s 失败：%v", legacy, err)
+		e.Warnf("删除旧的 %s 失败：%v", legacy, err)
 	}
-	e.Logf("已把旧的 cookies.json 迁移为账号 UID %s", mid)
+	e.Infof("已把旧的 cookies.json 迁移为账号 UID %s", mid)
 }
 
 // account 是一个正在排程的账号，每个账号有自己的循环和下次运行时间
@@ -236,11 +236,6 @@ func (acc *account) name() string {
 	return "UID " + acc.mid
 }
 
-// logf 给日志加上账号名前缀；不能在持有 acc.mu 时调用
-func (acc *account) logf(format string, args ...any) {
-	acc.e.Logf("[%s] "+format, append([]any{acc.name()}, args...)...)
-}
-
 // updateProfile 修改资料并保存
 func (acc *account) updateProfile(fn func(p *profile)) {
 	acc.mu.Lock()
@@ -248,7 +243,7 @@ func (acc *account) updateProfile(fn func(p *profile)) {
 	p := acc.prof
 	acc.mu.Unlock()
 	if err := acc.e.saveProfile(p); err != nil {
-		acc.e.Logf("保存账号 %s 的资料失败：%v", acc.mid, err)
+		acc.e.Errorf("保存账号 %s 的资料失败：%v", acc.mid, err)
 	}
 }
 
@@ -306,7 +301,7 @@ func (acc *account) run(s Settings) {
 	acc.mu.Unlock()
 	acc.markLogin(err)
 	if err != nil {
-		acc.logf("本轮失败：%v", err)
+		acc.errorf("本轮失败：%v", err)
 	}
 }
 
@@ -315,7 +310,7 @@ func (acc *account) scheduleFrom(base time.Time, s Settings) {
 	acc.mu.Lock()
 	acc.next = next
 	acc.mu.Unlock()
-	acc.logf("下一轮：%s", next.Format("2006-01-02 15:04:05"))
+	acc.infof("下一轮：%s", next.Format("2006-01-02 15:04:05"))
 }
 
 // loop 先等 first 再跑第一轮，之后按设置定时跑；失败只记日志，直到 stop 被关闭
@@ -345,7 +340,7 @@ func (acc *account) wait() bool {
 			continue
 		case <-acc.trigger:
 			t.Stop()
-			acc.logf("手动触发运行")
+			acc.infof("手动触发运行")
 			return true
 		case <-acc.resched:
 			t.Stop()

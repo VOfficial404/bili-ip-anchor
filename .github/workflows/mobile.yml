@@ -1,7 +1,10 @@
 name: Mobile
 
-# 构建 Android 的 APK 和 iOS 的 IPA（不签名）。发布时由 release.yml 调用；改动手机相关代码的 PR 也会跑一遍。
+# 构建 Android 的 APK 和 iOS 的 IPA（不签名）。推送到 main 和改动相关代码的 PR 会构建一遍，
+# 安装包在这次运行的 Artifacts 里下载；发布时由 release.yml 调用。
 on:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "core/**"

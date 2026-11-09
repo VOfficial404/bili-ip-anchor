@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	mrand "math/rand"
 	"net"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -28,33 +26,6 @@ type Config struct {
 	Transport http.RoundTripper // 不为 nil 时代替真实网络和代理，给测试和演示用
 }
 
-// ringLog 保留最近若干行日志给 WebUI 看
-type ringLog struct {
-	mu    sync.Mutex
-	lines []string
-	max   int
-}
-
-func newRingLog(max int) *ringLog { return &ringLog{max: max} }
-
-func (r *ringLog) Write(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
-		r.lines = append(r.lines, line)
-	}
-	if over := len(r.lines) - r.max; over > 0 {
-		r.lines = append([]string(nil), r.lines[over:]...)
-	}
-	return len(p), nil
-}
-
-func (r *ringLog) Lines() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.lines...)
-}
-
 type runResult struct {
 	At    time.Time `json:"at"`
 	OK    bool      `json:"ok"`
@@ -66,8 +37,7 @@ var errNoAccount = errors.New("找不到这个账号")
 // Engine 管理所有账号的排程和 WebUI。一个数据目录只能有一个 Engine 在运行。
 type Engine struct {
 	cfg  Config
-	log  *log.Logger
-	logs *ringLog
+	logs *logBook
 
 	mu         sync.Mutex
 	set        Settings
@@ -89,15 +59,9 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
-	logs := newRingLog(300)
-	out := io.Writer(logs)
-	if cfg.LogOutput != nil {
-		out = io.MultiWriter(cfg.LogOutput, logs)
-	}
 	e := &Engine{
 		cfg:        cfg,
-		log:        log.New(out, "", log.LstdFlags),
-		logs:       logs,
+		logs:       newLogBook(1000, cfg.LogOutput, cfg.Defaults.LogLevel),
 		accounts:   map[string]*account{},
 		tvqr:       map[string]*tvLogin{},
 		sessions:   map[string]time.Time{},
@@ -108,10 +72,9 @@ func New(cfg Config) *Engine {
 		stop:       make(chan struct{}),
 	}
 	e.set = e.loadSettings()
+	e.logs.SetLevel(e.set.LogLevel)
 	return e
 }
-
-func (e *Engine) Logf(format string, args ...any) { e.log.Printf(format, args...) }
 
 func (e *Engine) Settings() Settings {
 	e.mu.Lock()
@@ -129,12 +92,12 @@ func (e *Engine) Start() {
 	if s.Proxy != "" {
 		where = "经代理 " + redactProxy(s.Proxy)
 	}
-	e.Logf("bili-ip-anchor %s 启动：间隔 %s，随机抖动 %s，%s，数据目录 %s", e.cfg.Version, s.Interval, s.Jitter, where, e.cfg.DataDir)
+	e.Infof("bili-ip-anchor %s 启动：间隔 %s，随机抖动 %s，%s，日志级别 %s，数据目录 %s", e.cfg.Version, s.Interval, s.Jitter, where, s.LogLevel, e.cfg.DataDir)
 	e.syncAccounts(true)
 	if n := e.accountCount(); n == 0 {
-		e.Logf("还没有账号：点「添加账号」扫码登录")
+		e.Infof("还没有账号：点「添加账号」扫码登录")
 	} else {
-		e.Logf("已加载 %d 个账号，各自独立排程", n)
+		e.Infof("已加载 %d 个账号，各自独立排程", n)
 	}
 	go e.syncLoop()
 	go e.zoneLoop()
@@ -207,7 +170,7 @@ func (e *Engine) startAccountLocked(mid string, first time.Duration) {
 func (e *Engine) syncAccounts(stagger bool) {
 	mids, err := e.listAccounts()
 	if err != nil {
-		e.Logf("读取账号目录失败：%v", err)
+		e.Errorf("读取账号目录失败：%v", err)
 		return
 	}
 	e.mu.Lock()
@@ -227,14 +190,14 @@ func (e *Engine) syncAccounts(stagger bool) {
 		}
 		e.startAccountLocked(mid, first)
 		if !stagger {
-			e.Logf("发现新账号 UID %s", mid)
+			e.Infof("发现新账号 UID %s", mid)
 		}
 	}
 	for mid, acc := range e.accounts {
 		if !listed[mid] && !e.hasCookies(mid) {
 			close(acc.stop)
 			delete(e.accounts, mid)
-			e.Logf("账号 UID %s 的会话文件已不在，停止运行", mid)
+			e.Warnf("账号 UID %s 的会话文件已不在，停止运行", mid)
 		}
 	}
 }
@@ -258,8 +221,11 @@ func (e *Engine) zoneLoop() {
 		}
 		e.mu.Unlock()
 		wait := 30 * time.Minute
+		if err == nil {
+			e.Debugf("B 站把出口 IP %s 识别为 %s %s", zone.Addr, zone.region(), zone.ISP)
+		}
 		if err != nil {
-			e.Logf("查询出口 IP 归属失败：%v", err)
+			e.Warnf("查询出口 IP 归属失败：%v", err)
 			wait = 5 * time.Minute
 		}
 		t := time.NewTimer(wait)
@@ -305,14 +271,14 @@ func (e *Engine) removeAccount(mid string) error {
 	name := acc.name()
 	if cookies, err := e.loadAccountCookies(mid); err == nil {
 		if err := logout(e.client(cookies), cookies); err != nil {
-			acc.logf("B 站注销会话失败（本地会话仍会删除）：%v", err)
+			acc.warnf("B 站注销会话失败（本地会话仍会删除）：%v", err)
 		} else {
-			acc.logf("已在 B 站注销这份会话")
+			acc.infof("已在 B 站注销这份会话")
 		}
 	}
 	if sess := e.loadSession(mid); sess.AccessKey != "" {
 		if err := revokeAccessKey(e.anonClient(), sess.AccessKey); err != nil {
-			acc.logf("撤销 App 授权失败：%v", err)
+			acc.warnf("撤销 App 授权失败：%v", err)
 		}
 	}
 
@@ -325,7 +291,7 @@ func (e *Engine) removeAccount(mid string) error {
 		close(acc.stop)
 		delete(e.accounts, mid)
 	}
-	e.Logf("已移除账号 %s", name)
+	e.Infof("已移除账号 %s", name)
 	return nil
 }
 
@@ -369,6 +335,7 @@ func (e *Engine) UpdateSettings(s Settings) error {
 	e.mu.Lock()
 	proxyChanged := e.set.Proxy != s.Proxy
 	e.set = s
+	e.logs.SetLevel(s.LogLevel)
 	for _, acc := range e.accounts {
 		acc.reschedule()
 	}
@@ -383,7 +350,7 @@ func (e *Engine) UpdateSettings(s Settings) error {
 	if s.Proxy != "" {
 		where = "代理 " + redactProxy(s.Proxy)
 	}
-	e.Logf("设置已更新：间隔 %s，随机抖动 %s，%d 个视频，发动态 %v，%s", s.Interval, s.Jitter, len(s.Videos), s.DoDynamic, where)
+	e.Infof("设置已更新：间隔 %s，随机抖动 %s，%d 个视频，发动态 %v，%s，日志级别 %s", s.Interval, s.Jitter, len(s.Videos), s.DoDynamic, where, s.LogLevel)
 	return nil
 }
 
@@ -405,7 +372,8 @@ type statusResp struct {
 	ZoneCheckedAt *time.Time      `json:"zone_checked_at,omitempty"`
 	Settings      Settings        `json:"settings"`
 	Images        []imageInfo     `json:"images"`
-	Logs          []string        `json:"logs"`
+	Logs          []string        `json:"logs"`      // v0.6 及更早的客户端用；新客户端用 /api/logs
+	LogLevel      Level           `json:"log_level"` // 当前的日志级别
 }
 
 func (e *Engine) status() statusResp {
@@ -428,7 +396,8 @@ func (e *Engine) status() statusResp {
 	if resp.Images == nil {
 		resp.Images = []imageInfo{}
 	}
-	resp.Logs = e.logs.Lines()
+	resp.Logs = e.logs.lines(300)
+	resp.LogLevel = e.logs.Level()
 	return resp
 }
 
@@ -449,10 +418,10 @@ func (e *Engine) ServeLocal() (string, error) {
 // ListenAndServe 在 addr 上提供 WebUI，直到出错
 func (e *Engine) ListenAndServe(addr string) error {
 	if len(e.cfg.Password) < 8 {
-		e.Logf("警告：WebUI 密码少于 8 位，建议换一个更长的密码")
+		e.Warnf("WebUI 密码少于 8 位，建议换一个更长的密码")
 	}
 	srv := &http.Server{Addr: addr, Handler: e.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	e.Logf("WebUI 监听 %s", addr)
+	e.Infof("WebUI 监听 %s", addr)
 	return srv.ListenAndServe()
 }
 
