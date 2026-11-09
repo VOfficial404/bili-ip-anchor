@@ -124,10 +124,14 @@ func (b *logBook) add(level Level, mid, account, format string, args ...any) {
 	}
 }
 
-// since 返回序号大于 after、级别不低于 min 的日志
+// since 返回序号大于 after、级别不低于 min 的日志。after 比最新的序号还大时，
+// 说明程序重启过、客户端拿的是上次的序号，返回全部。
 func (b *logBook) since(after int64, min Level) []LogEntry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if n := len(b.entries); n > 0 && after > b.entries[n-1].Seq {
+		after = 0
+	}
 	out := []LogEntry{}
 	for _, en := range b.entries {
 		if en.Seq > after && en.Level >= min {

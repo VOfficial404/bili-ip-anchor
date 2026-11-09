@@ -1,6 +1,7 @@
-// 先用 gomobile 把 Go 核心编成 app/libs/bia.aar：
+// 先编译界面（和桌面客户端同一份 MyGo 代码）：cd desktop && go tool mygo build -platform web，
+// 再用 gomobile 把 Go 核心编成 app/libs/bia.aar：
 //   gomobile bind -target=android/arm64,android/arm,android/amd64 -androidapi 24 -o android/app/libs/bia.aar ./mobile
-// 再构建：gradle -p android assembleRelease -PversionName=0.6.0 -PversionCode=600
+// 最后构建：gradle -p android assembleRelease -PversionName=0.7.0 -PversionCode=700
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -47,9 +48,20 @@ android {
         jvmTarget = "17"
     }
 
-    // 第一页（选择用法）和 iOS 共用
-    sourceSets["main"].assets.srcDir("../../mobile/shell")
+    // 界面文件放在 assets/web，见下面的 copyWebUI
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("webui").get().asFile)
 }
+
+// 把 desktop/build/web 复制进 APK 的 assets/web
+val webUI = file("../../desktop/build/web")
+val copyWebUI = tasks.register<Sync>("copyWebUI") {
+    doFirst {
+        check(File(webUI, "index.html").isFile) { "没有界面文件，先运行 cd desktop && go tool mygo build -platform web" }
+    }
+    from(webUI)
+    into(layout.buildDirectory.dir("webui/web"))
+}
+tasks.named("preBuild") { dependsOn(copyWebUI) }
 
 dependencies {
     implementation(files("libs/bia.aar"))

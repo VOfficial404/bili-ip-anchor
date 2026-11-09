@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 本机模式的面板在 127.0.0.1 上走 http；连服务器时用户也可能填局域网或隧道的 http 地址，
-     第一页会对非本地的 http 地址提示风险 -->
+<!-- WebView 只打开 Go 核心在 127.0.0.1 上提供的界面（http）；连接服务器、访问 B 站都由 Go 核心发出，不受这里限制 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
 </network-security-config>

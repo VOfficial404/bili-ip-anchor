@@ -4,21 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/VOfficial404/bili-ip-anchor/core"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
 // version 要和 mygo.json 的 version 一致（version_test.go 检查）
-const version = "v0.6.0"
+const version = "v0.7.0"
 
 const (
 	pageOverview = "overview"
@@ -52,9 +49,13 @@ type app struct {
 	now   func() time.Time
 	wg    sync.WaitGroup // 进行中的后台请求，测试用来等它们结束
 
+	host      host
 	onLocal   func(running bool)       // 本机运行开始、停止时调用，main 用它显示托盘图标
-	pickFiles func() ([]string, error) // 选择图片，在后台 goroutine 里调用
-	transport http.RoundTripper        // 不为 nil 时本机模式用它代替网络，给测试用
+	pickFiles func() ([]picked, error) // 选择图片，在后台 goroutine 里调用
+
+	phone       bool   // 在手机 App 里（WebAssembly）
+	platform    string // 手机 App 的系统：android 或 ios
+	resumeLocal bool   // 手机 App 重新打开界面时，本机的定时任务还在跑
 
 	// 连接页
 	modeIdx    int // 0 连接服务器，1 在本机运行
@@ -67,8 +68,8 @@ type app struct {
 	connectErr string
 	probe      proxyProbe
 
-	engine    *core.Engine // 本机运行时不为 nil
-	cl        *client      // nil 表示还没连上
+	localOn   bool    // 正在本机运行
+	cl        *client // nil 表示还没连上
 	st        *status
 	loading   bool
 	loadErr   string
@@ -108,9 +109,17 @@ type app struct {
 	faces       map[string]*ui.Bitmap // 头像地址 → 图片
 	faceLoading map[string]bool
 
-	logScroll ui.ScrollState
-	toasts    []string
-	ticks     int
+	width       float32 // 窗口内容的宽度，每帧更新
+	narrow      bool    // 窗口窄（手机）：侧边栏换成底部标签栏，卡片竖着排
+	logScroll   ui.ScrollState
+	logs        []logEntry // 从 /api/logs 拉到的，最多 maxLogs 条
+	logSeq      int64      // 已经拉到的最后一条
+	logsLoading bool
+	logsTried   bool
+	logMin      int    // 日志页的级别筛选，下标对应 logMins
+	logAccount  string // 日志页的账号筛选，allAccounts 表示全部
+	toasts      []string
+	ticks       int
 }
 
 func newApp(s store, post func(func())) *app {
@@ -118,6 +127,7 @@ func newApp(s store, post func(func())) *app {
 	a := &app{
 		post:        post,
 		store:       s,
+		host:        newHost(s),
 		now:         time.Now,
 		pickFiles:   pickImages,
 		server:      p.Server,
@@ -141,14 +151,6 @@ func newApp(s store, post func(func())) *app {
 	return a
 }
 
-func pickImages() ([]string, error) {
-	return mygo.Dialog.Open(mygo.OpenDialogOptions{
-		Title:    "选择动态图片",
-		Multiple: true,
-		Filters:  []mygo.FileFilter{{Name: "图片", Extensions: []string{"jpg", "jpeg", "png", "gif", "webp"}}},
-	})
-}
-
 // async 在后台跑 work，再把它返回的 apply 交回主线程执行
 func (a *app) async(work func() (apply func())) {
 	a.wg.Add(1)
@@ -163,15 +165,24 @@ func (a *app) async(work func() (apply func())) {
 
 func (a *app) toast(msg string) { a.toasts = append(a.toasts, msg) }
 
-func (a *app) local() bool { return a.engine != nil }
+func (a *app) local() bool { return a.localOn }
+
+// device 是本机运行时「这台电脑」还是「这台手机」
+func (a *app) device() string {
+	if a.phone {
+		return "这台手机"
+	}
+	return "这台电脑"
+}
 
 // oldServer 表示连的是 v0.5 及更早的服务器，没有账号详情、多个视频等功能
 func (a *app) oldServer() bool { return a.st != nil && a.st.Mode == "" }
 
 // autoConnect 在启动时自动连接：上次是本机运行并勾选了自动开始，或者记住了服务器密码
 func (a *app) autoConnect() {
-	if a.modeIdx == 1 {
-		if a.autoLocal && a.proxy != "" {
+	if a.modeIdx == 1 || a.resumeLocal {
+		if (a.autoLocal || a.resumeLocal) && a.proxy != "" {
+			a.modeIdx = 1
 			a.startLocal()
 		}
 		return
@@ -194,11 +205,22 @@ func (a *app) connect() {
 	if a.connecting {
 		return
 	}
+	server, err := normalizeServer(a.server)
+	if err != nil {
+		a.connectErr = err.Error()
+		return
+	}
 	a.connecting, a.connectErr = true, ""
-	server, password, remember := a.server, a.password, a.remember
+	password, remember, h := a.password, a.remember, a.host
 	a.async(func() func() {
-		cl, err := newClient(server, password)
-		var st status
+		var (
+			cl *client
+			st status
+		)
+		base, err := h.remote(server)
+		if err == nil {
+			cl, err = newClient(base, password)
+		}
 		if err == nil {
 			err = cl.login()
 		}
@@ -211,7 +233,7 @@ func (a *app) connect() {
 				a.connectErr = err.Error()
 				return
 			}
-			a.server = cl.base
+			a.server = server
 			a.connected = a.now()
 			a.useClient(cl, st)
 			a.savePrefs(func(p *prefs) { p.Mode, p.Server, p.Remember = modeRemote, a.server, remember })
@@ -225,6 +247,7 @@ func (a *app) connect() {
 
 func (a *app) useClient(cl *client, st status) {
 	a.cl = cl
+	a.resetLogs()
 	a.loadErr, a.formEdited, a.formErr = "", false, ""
 	a.applyStatus(st)
 }
@@ -240,51 +263,20 @@ func (a *app) startLocal() {
 		a.connectErr = "请填写本机代理的地址"
 		return
 	}
-	if _, err := core.ParseProxy(proxy); err != nil {
-		a.connectErr = err.Error()
+	if !proxyRe.MatchString(proxy) {
+		a.connectErr = "代理地址不对，应写成 http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
 		return
 	}
 	a.connecting, a.connectErr = true, ""
-	autoLocal, rt := a.autoLocal, a.transport
+	autoLocal, h := a.autoLocal, a.host
 	a.async(func() func() {
 		var (
-			e       *core.Engine
-			cl      *client
-			st      status
-			warning string
+			cl *client
+			st status
 		)
-		via, err := core.ProbeProxy(proxy, rt)
-		if err == nil && rt == nil {
-			// 和直连比一下：一样说明代理没有接管这些请求
-			if direct, derr := core.ProbeProxy("", nil); derr == nil && direct.Addr == via.Addr {
-				warning = fmt.Sprintf("注意：经过代理和直连时 B 站看到的都是 %s，代理可能没有生效", via.Addr)
-			}
-		}
-		var dir string
+		run, err := h.startLocal(proxy)
 		if err == nil {
-			dir, err = a.store.dataDir()
-		}
-		if err == nil {
-			e = core.New(core.Config{
-				DataDir:   dir,
-				Version:   version,
-				Password:  core.RandomPassword(),
-				Local:     true,
-				Defaults:  core.DefaultSettings(),
-				LogOutput: os.Stderr,
-				Transport: rt,
-			})
-			if s := e.Settings(); s.Proxy != proxy {
-				s.Proxy = proxy
-				err = e.UpdateSettings(s)
-			}
-		}
-		if err == nil {
-			e.Start()
-			var addr string
-			if addr, err = e.ServeLocal(); err == nil {
-				cl, err = newClient(addr, e.Password())
-			}
+			cl, err = newClient(run.Base, run.Password)
 			if err == nil {
 				err = cl.login()
 			}
@@ -292,22 +284,23 @@ func (a *app) startLocal() {
 				st, err = cl.status()
 			}
 			if err != nil {
-				e.Stop()
+				h.stopLocal()
 			}
 		}
 		return func() {
 			a.connecting = false
+			a.resumeLocal = false
 			if err != nil {
 				a.connectErr = err.Error()
 				return
 			}
-			z := zone{Addr: via.Addr, Country: via.Country, Province: via.Province, City: via.City, ISP: via.ISP}
+			z := run.Zone
 			a.probe = proxyProbe{proxy: proxy, zone: &z}
-			a.engine, a.connected = e, a.now()
+			a.localOn, a.connected = true, a.now()
 			a.useClient(cl, st)
 			a.savePrefs(func(p *prefs) { p.Mode, p.Proxy, p.AutoLocal = modeLocal, proxy, autoLocal })
-			if warning != "" {
-				a.toast(warning)
+			if run.Warning != "" {
+				a.toast(run.Warning)
 			}
 			if a.onLocal != nil {
 				a.onLocal(true)
@@ -344,15 +337,17 @@ func (a *app) disconnect() {
 	if cl := a.cl; cl != nil {
 		go cl.logout()
 	}
-	if e := a.engine; e != nil {
-		a.engine = nil
-		go e.Stop()
+	if a.localOn {
+		a.localOn = false
+		h := a.host
+		a.async(func() func() { h.stopLocal(); return nil })
 		a.toast("已停止本机运行，账号和设置都还在")
 		if a.onLocal != nil {
 			a.onLocal(false)
 		}
 	}
 	a.cl, a.st, a.loadErr = nil, nil, ""
+	a.resetLogs()
 	a.qrOpen, a.confirmOpen = false, false
 	if !a.remember {
 		a.password = ""
@@ -414,6 +409,45 @@ func (a *app) tick() {
 	if a.qrOpen && a.ticks%2 == 0 {
 		a.pollQR()
 	}
+	if a.page == pageLogs && a.ticks%2 == 0 {
+		a.fetchLogs()
+	}
+}
+
+const maxLogs = 1000
+
+// levelLogs 表示服务器有分级日志（v0.7 起）
+func (a *app) levelLogs() bool { return a.st != nil && a.st.LogLevel != "" }
+
+func (a *app) resetLogs() {
+	a.logs, a.logSeq, a.logsTried = nil, 0, false
+}
+
+// fetchLogs 拉新增的日志；已经在拉就跳过
+func (a *app) fetchLogs() {
+	cl := a.cl
+	if cl == nil || a.logsLoading || !a.levelLogs() {
+		return
+	}
+	a.logsLoading, a.logsTried = true, true
+	after := a.logSeq
+	a.async(func() func() {
+		entries, err := cl.logs(after)
+		return func() {
+			a.logsLoading = false
+			if a.cl != cl || a.logSeq != after || err != nil || len(entries) == 0 {
+				return // 期间断开、换了服务器或者出错：下次再拉；连接错误由 refresh 显示
+			}
+			if entries[0].Seq <= after {
+				a.logs = nil // 服务器重启过，序号从头开始，返回的是全部
+			}
+			a.logs = append(a.logs, entries...)
+			if n := len(a.logs); n > maxLogs {
+				a.logs = slices.Clone(a.logs[n-maxLogs:])
+			}
+			a.logSeq = entries[len(entries)-1].Seq
+		}
+	})
 }
 
 func (a *app) loadFace(face string) {
@@ -541,7 +575,7 @@ func (a *app) askRemove(mid string) {
 	name := a.accountName(mid)
 	where := "服务器上的"
 	if a.local() {
-		where = "这台电脑上的"
+		where = a.device() + "上的"
 	}
 	a.askConfirm(fmt.Sprintf("退出「%s」？", name), where+"这份会话会在 B 站注销并删除，之后不再为这个账号运行。", "退出",
 		func() { a.accountAction(mid, "DELETE", "", "已退出 "+name) })
@@ -683,16 +717,14 @@ func (a *app) testProxy(proxy string) {
 		return
 	}
 	a.probe = proxyProbe{proxy: proxy, running: true}
-	cl, rt := a.cl, a.transport
+	cl, h := a.cl, a.host
 	a.async(func() func() {
 		var z zone
 		var err error
 		if cl != nil {
 			z, err = cl.testProxy(proxy)
 		} else {
-			var cz core.Zone
-			cz, err = core.ProbeProxy(proxy, rt)
-			z = zone{Addr: cz.Addr, Country: cz.Country, Province: cz.Province, City: cz.City, ISP: cz.ISP}
+			z, err = h.probe(proxy)
 		}
 		return func() {
 			if a.probe.proxy != proxy {
@@ -719,19 +751,19 @@ func (a *app) addImages() {
 	a.uploading = true
 	pick := a.pickFiles
 	a.async(func() func() {
-		paths, err := pick()
+		files, err := pick()
 		var bad []string
 		n := 0
 		if err != nil {
 			bad = append(bad, err.Error())
 		}
-		for _, p := range paths {
-			data, err := readLimited(p, maxImageSize)
+		for _, f := range files {
+			err := f.err
 			if err == nil {
-				err = cl.uploadImage(data)
+				err = cl.uploadImage(f.data)
 			}
 			if err != nil {
-				bad = append(bad, fmt.Sprintf("%s：%v", baseName(p), err))
+				bad = append(bad, fmt.Sprintf("%s：%v", f.name, err))
 				continue
 			}
 			n++
@@ -747,17 +779,6 @@ func (a *app) addImages() {
 			a.refresh()
 		}
 	})
-}
-
-func readLimited(path string, max int64) ([]byte, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if info.Size() > max {
-		return nil, fmt.Errorf("图片不能超过 %d MB", max>>20)
-	}
-	return os.ReadFile(path)
 }
 
 func baseName(p string) string {

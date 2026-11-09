@@ -113,6 +113,12 @@ func TestLogBook(t *testing.T) {
 	if got := msgs(b.since(all[0].Seq, LevelDebug)); got != "c,d" {
 		t.Fatalf("按序号取后面的，got %q", got)
 	}
+	if got := msgs(b.since(all[2].Seq, LevelDebug)); got != "" {
+		t.Fatalf("已经是最新的，got %q", got)
+	}
+	if got := msgs(b.since(all[2].Seq+100, LevelDebug)); got != "b 1,c,d" {
+		t.Fatalf("重启后客户端拿着旧序号，应返回全部，got %q", got)
+	}
 	if strings.Contains(out.String(), "看不到") || !strings.Contains(out.String(), "WARN  [小明] b 1") {
 		t.Fatalf("输出：%q", out.String())
 	}

@@ -1,3 +1,5 @@
+//go:build !js
+
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +33,7 @@ type fakeServer struct {
 	actions  []string // 「方法 UID 操作」，例如 POST 1001 run
 	polls    int
 	images   map[string][]byte
+	logs     []logEntry // /api/logs 返回的，v0.7 起有
 	*httptest.Server
 }
 
@@ -185,6 +189,16 @@ func newFakeServer(t *testing.T) *fakeServer {
 		f.st.Images = slices.DeleteFunc(f.st.Images, func(i imageInfo) bool { return i.Name == name })
 		ok(w)
 	}))
+	mux.HandleFunc("GET /api/logs", authed(func(w http.ResponseWriter, r *http.Request) {
+		after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+		out := []logEntry{}
+		for _, en := range f.logs {
+			if en.Seq > after {
+				out = append(out, en)
+			}
+		}
+		reply(w, map[string]any{"level": f.st.LogLevel, "entries": out})
+	}))
 	mux.HandleFunc("POST /api/proxy/test", authed(func(w http.ResponseWriter, r *http.Request) {
 		reply(w, zone{Addr: "198.51.100.7", Country: "中国", Province: "上海", City: "上海", ISP: "联通"})
 	}))
@@ -216,7 +230,7 @@ func newHarness(t *testing.T, s store) *harness {
 		h.mu.Unlock()
 	})
 	h.a.now = func() time.Time { return testNow }
-	h.a.pickFiles = func() ([]string, error) { return nil, nil }
+	h.a.pickFiles = func() ([]picked, error) { return nil, nil }
 	h.tt = ui.NewTester(h.a.view, 1080, 1500) // 足够高，设置页的按钮不用滚动就能点到
 	return h
 }
@@ -435,7 +449,10 @@ func TestSettingsVideosAndImages(t *testing.T) {
 
 	pic := filepath.Join(t.TempDir(), "a.png")
 	os.WriteFile(pic, qrPNG(), 0600)
-	h.a.pickFiles = func() ([]string, error) { return []string{pic}, nil }
+	h.a.pickFiles = func() ([]picked, error) {
+		data, err := os.ReadFile(pic)
+		return []picked{{name: "a.png", data: data, err: err}}, nil
+	}
 	h.click("添加图片")
 	h.must("已添加 1 张图片")
 	h.must("每轮会发：文字「今天天气不错」 + 1 张图片，几秒后删掉。")
@@ -529,13 +546,12 @@ func TestLocalMode(t *testing.T) {
 	st := &memStore{dir: dir}
 	h := newHarness(t, st)
 	b := &fakeBili{}
-	h.a.transport = b
+	nh := h.a.host.(*nativeHost)
+	nh.transport = b
 	var trayOn []bool
 	h.a.onLocal = func(on bool) { trayOn = append(trayOn, on) }
 	t.Cleanup(func() {
-		if h.a.engine != nil {
-			h.a.engine.Stop()
-		}
+		nh.stopLocal()
 	})
 
 	h.a.modeIdx = 1
@@ -548,7 +564,7 @@ func TestLocalMode(t *testing.T) {
 
 	h.a.proxy, h.a.autoLocal = "http://127.0.0.1:7890", true
 	h.click("开始运行")
-	if h.a.engine == nil {
+	if !nh.running() || !h.a.local() {
 		t.Fatalf("没有开始本机运行：%s", h.a.connectErr)
 	}
 	if p := st.load(); p.Mode != modeLocal || p.Proxy != "http://127.0.0.1:7890" || !p.AutoLocal {
@@ -586,8 +602,8 @@ func TestLocalMode(t *testing.T) {
 	b.mu.Unlock()
 
 	h.click("停止运行")
-	if h.a.engine != nil || h.a.cl != nil || fmt.Sprint(trayOn) != "[true false]" {
-		t.Fatalf("没有停下：engine=%v tray=%v", h.a.engine != nil, trayOn)
+	if nh.running() || h.a.local() || h.a.cl != nil || fmt.Sprint(trayOn) != "[true false]" {
+		t.Fatalf("没有停下：engine=%v tray=%v", nh.running(), trayOn)
 	}
 	h.must("在本机运行")
 }
@@ -623,5 +639,66 @@ func TestNormalizeServer(t *testing.T) {
 	}
 	if fmtNum(84.5) != "84.5" || fmtNum(12) != "12" {
 		t.Error("fmtNum 结果不对")
+	}
+}
+
+// v0.7 的服务器有分级日志；手机上窗口窄，侧边栏换成底部标签栏
+func TestPhoneLayoutAndLevelLogs(t *testing.T) {
+	f := newFakeServer(t)
+	f.st.Version, f.st.LogLevel, f.st.Settings.LogLevel = "v0.7.0", "info", "info"
+	f.logs = []logEntry{
+		{Seq: 1, Time: *at(-30), Level: "info", Msg: "bili-ip-anchor v0.7.0 启动"},
+		{Seq: 2, Time: *at(-29), Level: "debug", Mid: "1001", Account: "锚点测试甲", Msg: "GET api.bilibili.com/x/web-interface/nav：HTTP 200，512 字节，120ms"},
+		{Seq: 3, Time: *at(-28), Level: "warn", Mid: "1003", Account: "UID 1003", Msg: "本轮失败：心跳被拒绝"},
+	}
+	h := newHarness(t, &memStore{})
+	h.a.phone = true
+	h.tt = ui.NewTester(h.a.view, 390, 1700)
+	h.connected(f)
+	if !h.a.narrow {
+		t.Fatal("390 宽应该用手机布局")
+	}
+	h.must("断开连接") // 手机上连接信息在概览页
+	h.must("这台服务器")
+	h.snapshot("11-phone-overview")
+	h.a.page = pageAccounts
+	h.tt.Frame()
+	h.must("锚点测试甲")
+	h.snapshot("12-phone-accounts")
+
+	h.click("日志")
+	h.settle()
+	h.must("GET api.bilibili.com/x/web-interface/nav")
+	h.must("现在记录到「信息」")
+	h.snapshot("13-phone-logs")
+	h.a.logMin = 2 // 警告及以上
+	h.tt.Frame()
+	if h.tt.HasText("x/web-interface/nav") || !h.tt.HasText("本轮失败：心跳被拒绝") {
+		t.Fatalf("按级别筛选不对：%q", h.tt.Texts())
+	}
+	h.a.logMin, h.a.logAccount = 0, "锚点测试甲"
+	h.tt.Frame()
+	if h.tt.HasText("本轮失败") || !h.tt.HasText("x/web-interface/nav") {
+		t.Fatalf("按账号筛选不对：%q", h.tt.Texts())
+	}
+
+	// 新日志增量拉取
+	f.mu.Lock()
+	f.logs = append(f.logs, logEntry{Seq: 4, Time: *at(-1), Level: "error", Msg: "保存资料失败"})
+	f.mu.Unlock()
+	h.a.logAccount = allAccounts
+	h.a.fetchLogs()
+	h.settle()
+	h.must("保存资料失败")
+	if len(h.a.logs) != 4 {
+		t.Errorf("日志 %d 条", len(h.a.logs))
+	}
+
+	h.click("设置")
+	h.must("日志级别")
+	h.click("调试")
+	h.click("保存设置")
+	if f.st.Settings.LogLevel != "debug" {
+		t.Errorf("日志级别没有保存：%+v", f.st.Settings)
 	}
 }

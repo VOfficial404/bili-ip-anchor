@@ -71,6 +71,7 @@ type settings struct {
 	Interval    string   `json:"interval"`
 	Jitter      string   `json:"jitter"`
 	Proxy       string   `json:"proxy"`
+	LogLevel    string   `json:"log_level,omitempty"` // v0.7 起有：debug、info、warn、error
 }
 
 type imageInfo struct {
@@ -96,7 +97,18 @@ type status struct {
 	ZoneCheckedAt *time.Time  `json:"zone_checked_at"`
 	Settings      settings    `json:"settings"`
 	Images        []imageInfo `json:"images"`
-	Logs          []string    `json:"logs"`
+	Logs          []string    `json:"logs"`      // v0.6 及更早的服务器只有这个
+	LogLevel      string      `json:"log_level"` // v0.7 起有，同时有 /api/logs
+}
+
+// logEntry 是 /api/logs 返回的一条日志
+type logEntry struct {
+	Seq     int64     `json:"seq"`
+	Time    time.Time `json:"time"`
+	Level   string    `json:"level"`
+	Mid     string    `json:"mid"`
+	Account string    `json:"account"`
+	Msg     string    `json:"msg"`
 }
 
 var errUnauthorized = errors.New("面板密码不对")
@@ -320,6 +332,15 @@ func (c *client) removeImage(name string) error {
 	return c.doJSON("DELETE", "/api/dynamic/images/"+url.PathEscape(name), nil, nil)
 }
 
+// logs 取 seq 在 after 之后的日志，按时间先后
+func (c *client) logs(after int64) ([]logEntry, error) {
+	var r struct {
+		Entries []logEntry `json:"entries"`
+	}
+	err := c.doJSON("GET", fmt.Sprintf("/api/logs?after=%d&level=debug", after), nil, &r)
+	return r.Entries, err
+}
+
 func (c *client) testProxy(proxy string) (zone, error) {
 	var z zone
 	err := c.doJSON("POST", "/api/proxy/test", map[string]string{"proxy": proxy}, &z)
@@ -332,15 +353,7 @@ func fetchHdslb(src, size string) ([]byte, error) {
 	if u == "" {
 		return nil, errors.New("不是 B 站图床的图片")
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Get(u)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	return httpGetImage(u)
 }
 
 const (
