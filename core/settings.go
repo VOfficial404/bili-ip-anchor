@@ -57,7 +57,8 @@ type Settings struct {
 	DynamicText string   `json:"dynamic_text"` // 动态的文字，可以为空
 	Interval    Duration `json:"interval"`
 	Jitter      Duration `json:"jitter"`
-	Proxy       string   `json:"proxy"` // 所有 B 站请求经过的代理，空表示直连
+	Proxy       string   `json:"proxy"`     // 所有 B 站请求经过的代理，空表示直连
+	LogLevel    Level    `json:"log_level"` // 低于它的日志不记录
 }
 
 // UnmarshalJSON 兼容 v0.5 及更早版本只有一个 bvid 的设置文件
@@ -138,6 +139,9 @@ func (s Settings) Validate() error {
 	if _, err := ParseProxy(s.Proxy); err != nil {
 		return err
 	}
+	if s.LogLevel < LevelDebug || s.LogLevel > LevelError {
+		return errors.New("日志级别不对")
+	}
 	return nil
 }
 
@@ -180,7 +184,7 @@ func (e *Engine) loadSettings() Settings {
 		err = s.Validate()
 	}
 	if err != nil {
-		e.Logf("忽略 %s，改用默认设置：%v", e.settingsFile(), err)
+		e.Warnf("忽略 %s，改用默认设置：%v", e.settingsFile(), err)
 		s = e.cfg.Defaults
 		s.normalize()
 	}

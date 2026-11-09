@@ -1,1 +1,4 @@
 * text=auto eol=lf
+
+# 面板的构建结果按字节原样保存，CI 用 git diff 检查它和 webui 的源码一致
+core/web/** -text

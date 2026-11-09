@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,18 +17,28 @@ func (a *app) view(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.toasts = nil
+	a.width, _ = c.Size()
+	a.narrow = a.width < 700
 
 	if a.cl == nil || a.st == nil {
 		a.connectView(c)
 		return
 	}
 	t := c.Theme()
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		a.sidebar(c)
-		ui.Column(c).Grow(1).MinWidth(0).Background(t.Background).Children(func() {
-			a.pageView(c)
+	if a.narrow {
+		// 手机：页面在上，标签栏在下
+		ui.Column(c).Fill().Background(t.Background).Children(func() {
+			ui.Column(c).Grow(1).MinHeight(0).Children(func() { a.pageView(c) })
+			a.tabBar(c)
 		})
-	})
+	} else {
+		ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+			a.sidebar(c)
+			ui.Column(c).Grow(1).MinWidth(0).Background(t.Background).Children(func() {
+				a.pageView(c)
+			})
+		})
+	}
 	a.qrDialog(c)
 	if ui.AlertDialog(c, &a.confirmOpen, a.confirmTitle, a.confirmText, "取消", a.confirmOK) == 1 && a.confirmAction != nil {
 		a.confirmAction()
@@ -70,8 +81,12 @@ func (a *app) probeView(c *ui.Context, proxy string) {
 
 func (a *app) connectView(c *ui.Context) {
 	t := c.Theme()
-	ui.Column(c).Fill().Center().Padding(24).Background(t.Surface).Children(func() {
-		card(c).Width(420).Padding(28).Gap(16).Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.06)).Children(func() {
+	outer, inner := float32(24), float32(28)
+	if a.narrow {
+		outer, inner = 12, 20
+	}
+	ui.Column(c).Fill().Center().Padding(outer).Background(t.Surface).Children(func() {
+		card(c).Width(min(420, a.width-2*outer)).Padding(inner).Gap(16).Shadow(0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.06)).Children(func() {
 			ui.Row(c).Gap(10).Children(func() {
 				ui.Icon(c, iconAnchor).FontSize(22).TextColor(t.Accent)
 				ui.Text(c, "Bili IP Anchor").FontSize(18).Bold()
@@ -119,7 +134,14 @@ func (a *app) remoteForm(c *ui.Context) {
 }
 
 func (a *app) localForm(c *ui.Context) {
-	muted(c, "没有服务器也可以用：这台电脑定时以账号身份发请求，经过本机的代理出去，B 站看到的是代理的出口 IP。看视频不经过它。关掉窗口后程序在托盘里继续运行。").FontSize(13)
+	after := "关掉窗口后程序在托盘里继续运行。"
+	switch a.platform {
+	case "android":
+		after = "退出界面后在通知栏里继续运行。"
+	case "ios":
+		after = "iOS 只在 App 打开时运行，切到后台就会暂停。"
+	}
+	muted(c, "没有服务器也可以用："+a.device()+"定时以账号身份发请求，经过代理出去，B 站看到的是代理的出口 IP。看视频不经过它。"+after).FontSize(13)
 	ui.Field(c, "代理", func() {
 		ui.Row(c).Gap(8).Children(func() {
 			if ui.TextInput(c.Key("proxy"), &a.proxy).Placeholder("http://127.0.0.1:7890").Font("monospace").Disabled(a.connecting).Grow(1).Submitted() {
@@ -160,37 +182,98 @@ func (a *app) sidebar(c *ui.Context) {
 			ui.SidebarItem(c, pageLogs, iconLogs, "日志")
 		}).Grow(1).Background(t.Surface)
 		ui.Column(c).Padding(12, 16, 16).Gap(6).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
-			ui.Row(c).Gap(6).Children(func() {
-				dot := t.Success
-				if a.loadErr != "" {
-					dot = t.Danger
-				}
-				ui.Box(c).Size(7, 7).Radius(4).Background(dot)
-				label := "已连接 · " + a.st.Version
-				switch {
-				case a.loadErr != "":
-					label = "连接中断，正在重试"
-				case a.local():
-					label = "本机运行 · " + a.st.Version
-				}
-				muted(c, label).FontSize(12).SingleLine()
-			})
-			sideLine(c, iconServer, "服务器地址", serverHost(a.server)).Hidden(a.local())
-			sideLine(c, iconLaptop, "在这台电脑上运行", "本机").Hidden(!a.local())
-			sideLine(c, iconGlobe, "B 站看到的出口 IP", a.egressText())
-			if a.local() {
-				ui.Button(c.Key("disconnect"), "").OnClick(a.disconnect).Children(func() {
-					ui.Icon(c, iconStop)
-					ui.Text(c, "停止运行").SingleLine()
-				}).Margin(4, 0, 0, 0)
-			} else {
-				ui.Button(c.Key("disconnect"), "").OnClick(a.disconnect).Children(func() {
-					ui.Icon(c, iconLogout)
-					ui.Text(c, "断开连接").SingleLine()
-				}).Margin(4, 0, 0, 0)
-			}
+			a.connInfo(c)
 		})
 	})
+}
+
+// connInfo 是连接状态：桌面上在侧边栏底部，手机上在概览页最后
+func (a *app) connInfo(c *ui.Context) {
+	t := c.Theme()
+	ui.Row(c).Gap(6).Children(func() {
+		dot := t.Success
+		if a.loadErr != "" {
+			dot = t.Danger
+		}
+		ui.Box(c).Size(7, 7).Radius(4).Background(dot)
+		label := "已连接 · " + a.st.Version
+		switch {
+		case a.loadErr != "":
+			label = "连接中断，正在重试"
+		case a.local():
+			label = "本机运行 · " + a.st.Version
+		}
+		muted(c, label).FontSize(12).SingleLine()
+	})
+	sideLine(c, iconServer, "服务器地址", serverHost(a.server)).Hidden(a.local())
+	sideLine(c, iconLaptop, "在"+a.device()+"上运行", "本机").Hidden(!a.local())
+	sideLine(c, iconGlobe, "B 站看到的出口 IP", a.egressText())
+	if a.local() {
+		ui.Button(c.Key("disconnect"), "").OnClick(a.disconnect).Children(func() {
+			ui.Icon(c, iconStop)
+			ui.Text(c, "停止运行").SingleLine()
+		}).Margin(4, 0, 0, 0)
+	} else {
+		ui.Button(c.Key("disconnect"), "").OnClick(a.disconnect).Children(func() {
+			ui.Icon(c, iconLogout)
+			ui.Text(c, "断开连接").SingleLine()
+		}).Margin(4, 0, 0, 0)
+	}
+}
+
+var navPages = []struct {
+	page, label string
+	icon        *ui.SVG
+}{
+	{pageOverview, "概览", iconOverview},
+	{pageAccounts, "账号", iconUsers},
+	{pageSettings, "设置", iconSettings},
+	{pageLogs, "日志", iconLogs},
+}
+
+// tabBar 是手机上代替侧边栏的底部标签栏
+func (a *app) tabBar(c *ui.Context) {
+	t := c.Theme()
+	bad := 0
+	for _, acc := range a.st.Accounts {
+		if !acc.LoggedIn {
+			bad++
+		}
+	}
+	ui.Row(c).Padding(4, 0, 6).Background(t.Surface).BorderWidth(1, 0, 0, 0).BorderColor(t.Border).Children(func() {
+		for _, p := range navPages {
+			col := t.TextMuted
+			if a.page == p.page {
+				col = t.Accent
+			}
+			ui.ButtonBase(c.Key("tab-"+p.page)).Column().Grow(1).Basis(0).Gap(2).Padding(6, 0).Label(p.label).
+				OnClick(func() { a.page = p.page }).Children(func() {
+				ui.Box(c).Children(func() {
+					ui.Icon(c, p.icon).FontSize(20).TextColor(col)
+					if p.page == pageAccounts && bad > 0 {
+						ui.Box(c).Size(8, 8).Radius(4).Background(t.Danger).Absolute().Top(-2).Right(-4)
+					}
+				})
+				ui.Text(c, p.label).FontSize(11).TextColor(col).SingleLine()
+			})
+		}
+	})
+}
+
+// pad 是页面四周的留白，手机上小一些
+func (a *app) pad() float32 {
+	if a.narrow {
+		return 12
+	}
+	return 24
+}
+
+// padded 给卡片加内边距，手机上小一些
+func (a *app) padded(e ui.Element) ui.Element {
+	if a.narrow {
+		return e.Padding(16)
+	}
+	return e.Padding(20, 24)
 }
 
 func sideLine(c *ui.Context, svg *ui.SVG, tip, text string) ui.Element {
@@ -226,25 +309,36 @@ func serverHost(s string) string {
 func (a *app) pageView(c *ui.Context) {
 	t := c.Theme()
 	titles := map[string]string{pageOverview: "概览", pageAccounts: "账号", pageSettings: "设置", pageLogs: "日志"}
-	ui.Row(c).Gap(8).Padding(18, 24).MinHeight(70).Children(func() {
-		ui.Text(c, titles[a.page]).FontSize(20).Bold().Grow(1)
+	pad := a.pad()
+	head := ui.Row(c).Gap(8).Padding(18, pad).MinHeight(70)
+	title := float32(20)
+	if a.narrow {
+		head.Padding(10, pad).MinHeight(56)
+		title = 18
+	}
+	head.Children(func() {
+		ui.Text(c, titles[a.page]).FontSize(title).Bold().Grow(1)
 		switch a.page {
 		case pageOverview, pageAccounts:
 			if len(a.st.Accounts) > 0 {
-				ui.Button(c.Key("run-all"), "").Disabled(a.runningAll || !anyIdle(a.st.Accounts)).OnClick(a.runAll).Children(func() {
+				ui.Button(c.Key("run-all"), "").Label("全部立即运行").Disabled(a.runningAll || !anyIdle(a.st.Accounts)).OnClick(a.runAll).Children(func() {
 					ui.Icon(c, iconPlay)
-					ui.Text(c, "全部立即运行").SingleLine()
+					ui.Text(c, "全部立即运行").SingleLine().Hidden(a.narrow)
 				})
 			}
-			ui.PrimaryButton(c.Key("add"), "").OnClick(func() { a.openQR("") }).Children(func() {
+			add := "添加账号"
+			if a.narrow {
+				add = "添加"
+			}
+			ui.PrimaryButton(c.Key("add"), "").Label("添加账号").OnClick(func() { a.openQR("") }).Children(func() {
 				ui.Icon(c, iconPlus)
-				ui.Text(c, "添加账号").SingleLine()
+				ui.Text(c, add).SingleLine()
 			})
 		}
 	})
 	banner := func(msg string) {
 		ui.Text(c, msg).FontSize(13).TextColor(t.Danger).Selectable().
-			Padding(8, 12).Margin(0, 24, 12).Radius(t.Radius).Background(t.Danger.Alpha(0.08))
+			Padding(8, 12).Margin(0, pad, 12).Radius(t.Radius).Background(t.Danger.Alpha(0.08))
 	}
 	if a.loadErr != "" {
 		banner("连不上服务器，显示的是之前的数据：" + a.loadErr)
@@ -254,13 +348,13 @@ func (a *app) pageView(c *ui.Context) {
 	}
 	switch a.page {
 	case pageAccounts:
-		ui.Scroll(c.Key("accounts")).Grow(1).Padding(0, 24, 24).Gap(12).Children(func() { a.accountsPage(c) })
+		ui.Scroll(c.Key("accounts")).Grow(1).Padding(0, pad, pad).Gap(12).Children(func() { a.accountsPage(c) })
 	case pageSettings:
-		ui.Scroll(c.Key("settings")).Grow(1).Padding(0, 24, 24).Children(func() { a.settingsPage(c) })
+		ui.Scroll(c.Key("settings")).Grow(1).Padding(0, pad, pad).Children(func() { a.settingsPage(c) })
 	case pageLogs:
 		a.logsPage(c)
 	default:
-		ui.Scroll(c.Key("overview")).Grow(1).Padding(0, 24, 24).Gap(16).Children(func() { a.overviewPage(c) })
+		ui.Scroll(c.Key("overview")).Grow(1).Padding(0, pad, pad).Gap(min(16, pad)).Children(func() { a.overviewPage(c) })
 	}
 }
 
@@ -301,7 +395,11 @@ func zoneRegion(z *zone) string {
 func (a *app) overviewPage(c *ui.Context) {
 	t := c.Theme()
 	st := a.st
-	card(c).Padding(20, 24).Gap(10).Children(func() {
+	big, gap := float32(36), float32(12)
+	if a.narrow {
+		big, gap = 28, 10
+	}
+	a.padded(card(c)).Gap(10).Children(func() {
 		where := "这台服务器"
 		if a.local() {
 			where = "本机"
@@ -312,7 +410,7 @@ func (a *app) overviewPage(c *ui.Context) {
 		muted(c, "B 站把"+where+"识别为")
 		switch {
 		case st.Zone != nil:
-			ui.Text(c, zonePlace(st.Zone)).FontSize(36).Bold().LetterSpacing(1)
+			ui.Text(c, zonePlace(st.Zone)).FontSize(big).Bold().LetterSpacing(1)
 			ui.Row(c).Gap(6).Wrap().Children(func() {
 				if st.Zone.ISP != "" {
 					ui.Badge(c, st.Zone.ISP)
@@ -349,32 +447,43 @@ func (a *app) overviewPage(c *ui.Context) {
 			next = acc.Next
 		}
 	}
-	ui.Row(c).Gap(12).AlignItems(ui.Stretch).Children(func() {
-		stat(c, "账号", fmt.Sprint(len(st.Accounts)), "各自排程、同时进行", t.Text)
+	stats := ui.Row(c).Gap(gap).AlignItems(ui.Stretch)
+	if a.narrow {
+		stats.Wrap()
+	}
+	stats.Children(func() {
+		a.stat(c, "账号", fmt.Sprint(len(st.Accounts)), "各自排程、同时进行", t.Text)
 		if authed > 0 {
-			stat(c, "主页已是目标属地", fmt.Sprintf("%d / %d", matched, authed), fmt.Sprintf("%d 个账号已授权查询", authed), t.Success)
+			a.stat(c, "主页已是目标属地", fmt.Sprintf("%d / %d", matched, authed), fmt.Sprintf("%d 个账号已授权查询", authed), t.Success)
 		} else {
-			stat(c, "主页已是目标属地", "—", "授权查询后显示", t.Success)
+			a.stat(c, "主页已是目标属地", "—", "授权查询后显示", t.Success)
 		}
 		badColor := t.Text
 		if bad > 0 {
 			badColor = t.Danger
 		}
-		stat(c, "需要处理", fmt.Sprint(bad), "登录失效或上次失败", badColor)
+		a.stat(c, "需要处理", fmt.Sprint(bad), "登录失效或上次失败", badColor)
 		nextText, nextSub := "—", "没有排程"
 		if next != nil {
 			nextText, nextSub = a.fmtTime(*next), a.fmtRelative(*next)
 		}
-		stat(c, "最近一次运行", nextText, nextSub, t.Text)
+		a.stat(c, "最近一次运行", nextText, nextSub, t.Text)
 	})
 
 	if len(st.Accounts) == 0 {
 		a.emptyAccounts(c)
 	}
+	if a.narrow {
+		card(c).Gap(6).Children(func() { a.connInfo(c) })
+	}
 }
 
-func stat(c *ui.Context, label, value, sub string, color ui.Color) {
-	card(c).Grow(1).Basis(0).MinWidth(0).Gap(2).Children(func() {
+func (a *app) stat(c *ui.Context, label, value, sub string, color ui.Color) {
+	basis := float32(0)
+	if a.narrow {
+		basis = 140 // 一行两个
+	}
+	card(c).Grow(1).Basis(basis).MinWidth(0).Gap(2).Children(func() {
 		muted(c, label).FontSize(13).SingleLine()
 		ui.Text(c, value).FontSize(24).Bold().TextColor(color).SingleLine().FontFeatures("tnum")
 		muted(c, sub).FontSize(12).SingleLine()
@@ -457,6 +566,38 @@ func (a *app) accountCard(c *ui.Context, acc account) {
 		name = "UID " + acc.Mid
 	}
 	busy := a.busy[acc.Mid] || acc.Running || acc.Busy != ""
+	actions := func() {
+		if acc.LoggedIn {
+			label := "立即运行"
+			if acc.Running {
+				label = "运行中"
+			}
+			ui.Button(c.Key("run"), "").Disabled(busy).OnClick(func() { a.accountAction(acc.Mid, "POST", "run", "") }).Children(func() {
+				ui.Icon(c, iconPlay)
+				ui.Text(c, label).SingleLine()
+			})
+			if !a.oldServer() {
+				iconButton(c, "check", iconRefresh, "刷新资料：只查询硬币、Cookie 和主页属地，不发心跳").Disabled(busy).
+					OnClick(func() { a.accountAction(acc.Mid, "POST", "check", "资料已刷新") })
+			}
+		} else {
+			ui.PrimaryButton(c.Key("relogin"), "重新扫码").OnClick(func() { a.openQR("") })
+		}
+		iconButton(c, "remove", iconLogout, "退出这个账号").TextColor(t.Danger).Disabled(a.busy[acc.Mid]).OnClick(func() { a.askRemove(acc.Mid) })
+	}
+	// 手机上一行放不下两格，各占一行
+	tiles := func(body func()) {
+		r := ui.Row(c).Gap(10).AlignItems(ui.Stretch)
+		if a.narrow {
+			r.Wrap()
+		}
+		r.Children(body)
+	}
+	fit := func(e ui.Element) {
+		if a.narrow {
+			e.Basis(240)
+		}
+	}
 	card(c.Key(acc.Mid)).Gap(14).Children(func() {
 		ui.Row(c).Gap(12).Children(func() {
 			ui.Avatar(c, name, a.faces[acc.Face])
@@ -484,43 +625,30 @@ func (a *app) accountCard(c *ui.Context, acc account) {
 					}
 				})
 			})
-			ui.Row(c).Gap(6).Children(func() {
-				if acc.LoggedIn {
-					label := "立即运行"
-					if acc.Running {
-						label = "运行中"
-					}
-					ui.Button(c.Key("run"), "").Disabled(busy).OnClick(func() { a.accountAction(acc.Mid, "POST", "run", "") }).Children(func() {
-						ui.Icon(c, iconPlay)
-						ui.Text(c, label).SingleLine()
-					})
-					if !a.oldServer() {
-						iconButton(c, "check", iconRefresh, "刷新资料：只查询硬币、Cookie 和主页属地，不发心跳").Disabled(busy).
-							OnClick(func() { a.accountAction(acc.Mid, "POST", "check", "资料已刷新") })
-					}
-				} else {
-					ui.PrimaryButton(c.Key("relogin"), "重新扫码").OnClick(func() { a.openQR("") })
-				}
-				iconButton(c, "remove", iconLogout, "退出这个账号").TextColor(t.Danger).Disabled(a.busy[acc.Mid]).OnClick(func() { a.askRemove(acc.Mid) })
-			})
+			if !a.narrow {
+				ui.Row(c).Gap(6).Children(actions)
+			}
 		})
+		if a.narrow {
+			ui.Row(c).Gap(6).Wrap().Children(actions)
+		}
 
 		if !a.oldServer() {
 			ui.Column(c).Gap(10).Children(func() {
-				ui.Row(c).Gap(10).AlignItems(ui.Stretch).Children(func() {
-					tile(c, iconPin, "主页属地", func() { a.homeTile(c, acc, busy) })
-					tile(c, iconGlobe, "目标属地", func() {
+				tiles(func() {
+					fit(tile(c, iconPin, "主页属地", func() { a.homeTile(c, acc, busy) }))
+					fit(tile(c, iconGlobe, "目标属地", func() {
 						if z := a.st.Zone; z != nil {
 							tileValue(c, zoneRegion(z))
 							tileSub(c, strings.Join(nonEmpty(z.Addr, z.ISP), " · "))
 						} else {
 							tilePending(c, "查询中")
 						}
-					})
+					}))
 				})
-				ui.Row(c).Gap(10).AlignItems(ui.Stretch).Children(func() {
-					tile(c, iconPlay, "运行", func() { a.runTile(c, acc) })
-					tile(c, iconCookie, "Cookie", func() { a.cookieTile(c, acc, busy) })
+				tiles(func() {
+					fit(tile(c, iconPlay, "运行", func() { a.runTile(c, acc) }))
+					fit(tile(c, iconCookie, "Cookie", func() { a.cookieTile(c, acc, busy) }))
 				})
 			})
 		}
@@ -716,8 +844,8 @@ func (a *app) settingsPage(c *ui.Context) {
 	}
 	edited := false
 	muted(c, "所有账号共用，保存后立即生效。").FontSize(13).Margin(0, 0, 16)
-	ui.Column(c).MaxWidth(680).Gap(16).Children(func() {
-		card(c).Padding(20, 24).Gap(12).Children(func() {
+	ui.Column(c).MaxWidth(680).Gap(min(16, a.pad())).Children(func() {
+		a.padded(card(c)).Gap(12).Children(func() {
 			ui.Text(c, "运行").FontSize(15).Bold()
 			ui.Form(c, func() {
 				ui.Field(c, "每轮间隔", func() {
@@ -733,10 +861,19 @@ func (a *app) settingsPage(c *ui.Context) {
 					})
 					a.probeView(c, a.form.Proxy)
 				}).Description("所有以账号身份发出的 B 站请求都经过它，B 站看到的就是代理的出口 IP。支持 http://、socks5://。").Error(proxyErr)
+				if a.levelLogs() {
+					ui.Field(c, "日志级别", func() {
+						i := max(0, slices.Index(logLevels, a.form.LogLevel))
+						if ui.Segmented(c.Key("log-level"), &i, logLevelNames...).Label("日志级别").Changed() {
+							a.form.LogLevel = logLevels[i]
+							edited = true
+						}
+					}).Description("记录到哪一级。排查问题时选「调试」，会记下每个 B 站请求的地址、结果和耗时（不含 Cookie 和 access_key）。")
+				}
 			})
 		})
 
-		card(c).Padding(20, 24).Gap(10).Children(func() {
+		a.padded(card(c)).Gap(10).Children(func() {
 			ui.Text(c, "心跳视频").FontSize(15).Bold()
 			muted(c, fmt.Sprintf("每轮从下面随机选一个视频上报观看心跳。任意公开视频都可以，最多 %d 个。", maxVideos)).FontSize(13)
 			for _, bvid := range a.form.Videos {
@@ -760,7 +897,7 @@ func (a *app) settingsPage(c *ui.Context) {
 			}
 		})
 
-		card(c).Padding(20, 24).Gap(12).Children(func() {
+		a.padded(card(c)).Gap(12).Children(func() {
 			ui.Text(c, "动态").FontSize(15).Bold()
 			ui.Form(c, func() {
 				ui.Field(c, "发动态", func() {
@@ -895,9 +1032,33 @@ func fmtCount(n int64) string {
 
 /* 日志 */
 
+var (
+	logLevels     = []string{"debug", "info", "warn", "error"}
+	logLevelNames = []string{"调试", "信息", "警告", "错误"}
+	logMins       = []string{"全部", "信息及以上", "警告及以上", "只看错误"}
+)
+
+const allAccounts = "全部账号"
+
+func levelColor(t *ui.Theme, level string) ui.Color {
+	switch level {
+	case "debug":
+		return t.TextMuted
+	case "warn":
+		return t.Warning
+	case "error":
+		return t.Danger
+	}
+	return t.Accent
+}
+
 var logLineRe = regexp.MustCompile(`^\d{4}/(\d\d/\d\d \d\d:\d\d:\d\d) (?:(\[[^\]]*\]) )?(.*)$`)
 
 func (a *app) logsPage(c *ui.Context) {
+	if a.levelLogs() {
+		a.levelLogsPage(c)
+		return
+	}
 	t := c.Theme()
 	muted(c, "最近 300 行，每 5 秒更新。").FontSize(13).Margin(0, 24, 12)
 	if a.logScroll.Y >= a.logScroll.MaxY {
@@ -935,13 +1096,17 @@ func (a *app) logsPage(c *ui.Context) {
 func (a *app) qrDialog(c *ui.Context) {
 	t := c.Theme()
 	ui.Modal(c, &a.qrOpen, func() {
-		ui.Column(c).Width(320).Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Width(min(320, a.width-64)).Gap(12).AlignItems(ui.Center).Children(func() {
 			if a.qrMid == "" {
 				ui.Text(c, "添加 B 站账号").FontSize(17).Bold()
 				muted(c, "用 B 站 App 扫码并确认。已经添加过的账号再扫一次，会更新它的会话。").FontSize(13).TextAlign(ui.Center)
 			} else {
 				ui.Text(c, "授权查询主页属地").FontSize(17).Bold()
 				muted(c, fmt.Sprintf("用「%s」的 B 站 App 扫码并确认。这份授权只用来查询这个账号主页显示的 IP 属地，随时可以取消。", a.accountName(a.qrMid))).FontSize(13).TextAlign(ui.Center)
+			}
+			if a.phone {
+				ui.Text(c, "B 站 App 也在这台手机上：先截图，再在 B 站「扫一扫」里点相册，选这张截图。").
+					FontSize(12).TextAlign(ui.Center).Padding(6, 10).Radius(t.Radius).Background(t.Accent.Alpha(0.08))
 			}
 			ui.Box(c).Size(232, 232).Center().Padding(8).Radius(t.Radius*1.5).Background(ui.Hex("#ffffff")).Border(1, t.Border).Children(func() {
 				switch {
@@ -1019,4 +1184,81 @@ func (a *app) fmtRelative(at time.Time) string {
 		return text + "后"
 	}
 	return text + "前"
+}
+
+// levelLogsPage 是 v0.7 起的日志页：按级别和账号筛选，每 2 秒拉一次新增的
+func (a *app) levelLogsPage(c *ui.Context) {
+	t := c.Theme()
+	if !a.logsTried {
+		a.fetchLogs()
+	}
+	accounts := []string{allAccounts}
+	for _, acc := range a.st.Accounts {
+		if name := a.accountName(acc.Mid); !slices.Contains(accounts, name) {
+			accounts = append(accounts, name)
+		}
+	}
+	if a.logAccount == "" || !slices.Contains(accounts, a.logAccount) {
+		a.logAccount = allAccounts
+	}
+	pad := float32(24)
+	if a.narrow {
+		pad = 12
+	}
+	ui.Row(c).Gap(8).Wrap().Margin(0, pad, 12).Children(func() {
+		ui.Segmented(c.Key("log-min"), &a.logMin, logMins...).Label("级别")
+		if len(accounts) > 2 {
+			ui.Select(c.Key("log-account"), &a.logAccount, accounts).Width(160)
+		}
+		level := logLevelNames[max(0, slices.Index(logLevels, a.st.LogLevel))]
+		muted(c, "现在记录到「"+level+"」，在设置里改").FontSize(12).Grow(1).TextAlign(ui.End)
+	})
+	if a.logScroll.Y >= a.logScroll.MaxY {
+		a.logScroll.Y = math.MaxFloat32 // 停在底部时跟着新日志走
+	}
+	min := logLevels[a.logMin]
+	ui.Scroll(c.Key("level-logs")).TrackScroll(&a.logScroll).Grow(1).Margin(0, pad, pad).Padding(12, 14).
+		Radius(t.Radius*1.5).Background(t.Surface).Border(1, t.Border).Selectable().
+		Font("monospace").FontSize(12).Gap(2).Children(func() {
+		shown := 0
+		for _, en := range a.logs {
+			if slices.Index(logLevels, en.Level) < slices.Index(logLevels, min) ||
+				(a.logAccount != allAccounts && en.Account != a.logAccount) {
+				continue
+			}
+			shown++
+			meta := func() {
+				ui.Text(c, en.Time.Local().Format("01/02 15:04:05")).TextColor(t.TextMuted).NoWrap()
+				ui.Text(c, strings.ToUpper(en.Level)).TextColor(levelColor(t, en.Level)).Width(40).NoWrap()
+				if en.Account != "" {
+					ui.Text(c, "["+en.Account+"]").TextColor(t.Accent).SingleLine().Shrink(1)
+				}
+			}
+			msg := func() {
+				m := ui.Text(c, en.Msg).Grow(1).Shrink(1).MinWidth(0)
+				if en.Level == "warn" || en.Level == "error" {
+					m.TextColor(levelColor(t, en.Level))
+				}
+			}
+			if a.narrow {
+				// 手机上时间、级别、账号一行，消息另起一行
+				ui.Column(c.Key(en.Seq)).Gap(1).Padding(0, 0, 4).Children(func() {
+					ui.Row(c).Gap(8).Children(meta)
+					msg()
+				})
+				continue
+			}
+			ui.Row(c.Key(en.Seq)).Gap(8).AlignItems(ui.Start).Children(func() {
+				meta()
+				msg()
+			})
+		}
+		if shown == 0 {
+			if a.logsLoading && len(a.logs) == 0 {
+				muted(c, "正在读取日志…")
+			} else {
+				muted(c, "没有符合条件的日志")
+			}
+		}
+	})
 }

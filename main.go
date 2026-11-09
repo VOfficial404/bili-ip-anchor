@@ -25,6 +25,10 @@ func loadConfig() core.Config {
 	if len(videos) == 0 {
 		videos = []string{envOr("BVID", "BV15HFVz1EvM")}
 	}
+	level, err := core.ParseLevel(os.Getenv("LOG_LEVEL"))
+	if err != nil {
+		log.Printf("LOG_LEVEL：%v，改用 info", err)
+	}
 	return core.Config{
 		DataDir:   dataDir,
 		Version:   version,
@@ -37,6 +41,7 @@ func loadConfig() core.Config {
 			Interval:    core.Duration(envDuration("INTERVAL", 6*time.Hour)),
 			Jitter:      core.Duration(envDuration("JITTER", 30*time.Minute)),
 			Proxy:       os.Getenv("PROXY"),
+			LogLevel:    level,
 		},
 	}
 }
@@ -99,7 +104,7 @@ func cliLogin(e *core.Engine) error {
 func daemon(e *core.Engine, password string) {
 	e.Start()
 	if password == "" {
-		e.Logf("未设置 WEBUI_PASSWORD，WebUI 未启用")
+		e.Warnf("未设置 WEBUI_PASSWORD，WebUI 未启用")
 		select {}
 	}
 	log.Fatal(e.ListenAndServe(envOr("WEBUI_ADDR", ":8080")))
@@ -113,7 +118,7 @@ const usage = `bili-ip-anchor %s
   bili-ip-anchor daemon           常驻运行，每个账号按 INTERVAL 独立定时；设置了 WEBUI_PASSWORD 时同时提供 WebUI
   bili-ip-anchor version          显示版本
 
-环境变量：DATA_DIR  BVIDS  DO_DYNAMIC  DYNAMIC_TEXT  INTERVAL  JITTER  PROXY  WEBUI_ADDR  WEBUI_PASSWORD  TZ（详见 README）
+环境变量：DATA_DIR  BVIDS  DO_DYNAMIC  DYNAMIC_TEXT  INTERVAL  JITTER  PROXY  LOG_LEVEL  WEBUI_ADDR  WEBUI_PASSWORD  TZ（详见 README）
 `
 
 func main() {

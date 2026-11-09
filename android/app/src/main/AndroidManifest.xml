@@ -14,20 +14,16 @@
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
-            android:name=".SetupActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode">
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".PanelActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode" />
 
         <!-- 本机运行时让进程留在后台，定时任务继续跑 -->
         <service

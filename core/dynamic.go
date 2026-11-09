@@ -133,11 +133,11 @@ func (e *Engine) migrateLegacyDynamicImage() {
 		}
 		name, err := e.addImage(data)
 		if err != nil {
-			e.Logf("旧的 %s 没有迁移：%v", old, err)
+			e.Warnf("旧的 %s 没有迁移：%v", old, err)
 			continue
 		}
 		os.Remove(old)
-		e.Logf("已把 %s 移到动态图片 %s", n, name)
+		e.Infof("已把 %s 移到动态图片 %s", n, name)
 	}
 }
 
@@ -225,7 +225,7 @@ func dynamicRequest(text string, pics []uploadedPic) map[string]any {
 // removeDelay 发动态后等多久再删；测试里会改成 0
 var removeDelay = func() time.Duration { return time.Duration(5+rand.Intn(16)) * time.Second }
 
-func (e *Engine) postAndRemoveDynamic(c *biliClient, csrf, text string, logf logFunc) error {
+func (e *Engine) postAndRemoveDynamic(c *biliClient, csrf, text string, acc *account) error {
 	images, err := e.dynamicImages(text)
 	if err != nil {
 		return err
@@ -239,7 +239,7 @@ func (e *Engine) postAndRemoveDynamic(c *biliClient, csrf, text string, logf log
 		pics = append(pics, pic)
 	}
 	if len(pics) > 0 {
-		logf("上传 %d 张图片", len(pics))
+		acc.debugf("上传了 %d 张图片", len(pics))
 	}
 
 	var cr struct {
@@ -251,7 +251,7 @@ func (e *Engine) postAndRemoveDynamic(c *biliClient, csrf, text string, logf log
 	if err := c.do("POST", "https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf="+url.QueryEscape(csrf), nil, dynamicRequest(text, pics), &cr); err != nil {
 		return err
 	}
-	logf("发动态：%d %s", cr.Code, cr.Message)
+	acc.infof("发动态：%d %s", cr.Code, cr.Message)
 	if cr.Data.DynID == "" {
 		return fmt.Errorf("发动态失败：%d %s", cr.Code, cr.Message)
 	}
@@ -262,7 +262,7 @@ func (e *Engine) postAndRemoveDynamic(c *biliClient, csrf, text string, logf log
 		map[string]any{"dyn_id_str": cr.Data.DynID}, &rr); err != nil {
 		return err
 	}
-	logf("删动态：%d %s", rr.Code, rr.Message)
+	acc.infof("删动态：%d %s", rr.Code, rr.Message)
 	if rr.Code != 0 {
 		return fmt.Errorf("删动态失败，请手动删除动态 %s：%d %s", cr.Data.DynID, rr.Code, rr.Message)
 	}

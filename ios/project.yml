@@ -1,5 +1,6 @@
 # XcodeGen 项目描述：xcodegen generate 生成 BiliIPAnchor.xcodeproj。
-# 先用 gomobile 把 Go 核心编成 Mobile.xcframework：
+# 先编译界面（和桌面客户端同一份 MyGo 代码）：cd desktop && go tool mygo build -platform web，
+# 再用 gomobile 把 Go 核心编成 Mobile.xcframework：
 #   gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile
 name: BiliIPAnchor
 options:
@@ -8,8 +9,8 @@ options:
     iOS: "16.0"
 settings:
   base:
-    MARKETING_VERSION: "0.6.0"
-    CURRENT_PROJECT_VERSION: "600"
+    MARKETING_VERSION: "0.7.0"
+    CURRENT_PROJECT_VERSION: "700"
 targets:
   BiliIPAnchor:
     type: application
@@ -17,7 +18,9 @@ targets:
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
-      - path: ../mobile/shell/setup.html
+      # 界面文件，在 App 里是 web 文件夹
+      - path: ../desktop/build/web
+        type: folder
         buildPhase: resources
     dependencies:
       - framework: Mobile.xcframework
@@ -40,7 +43,7 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
-        # 本机模式的面板在 127.0.0.1 上走 http；连服务器时也可能是局域网或隧道的 http 地址
+        # WebView 只打开 Go 核心在 127.0.0.1 上提供的界面（http）；连接服务器、访问 B 站都由 Go 核心发出
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
     scheme: {}

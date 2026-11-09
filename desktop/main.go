@@ -1,3 +1,5 @@
+//go:build !js
+
 // bili-ip-anchor 的桌面客户端，两种用法：
 //   - 连接服务器：通过服务器 WebUI 的接口查看状态、扫码添加账号、修改设置和看日志，定时任务在服务器上跑；
 //   - 在本机运行：程序自己跑定时任务，请求经过本机的代理出去，关闭窗口后在托盘里继续运行。
@@ -76,9 +78,7 @@ func main() {
 	})
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
 	mygo.App.OnQuit(func() {
-		if a.engine != nil {
-			a.engine.Stop()
-		}
+		a.host.stopLocal()
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

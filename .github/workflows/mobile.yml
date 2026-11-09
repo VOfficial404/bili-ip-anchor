@@ -1,10 +1,14 @@
 name: Mobile
 
-# 构建 Android 的 APK 和 iOS 的 IPA（不签名）。发布时由 release.yml 调用；改动手机相关代码的 PR 也会跑一遍。
+# 构建 Android 的 APK 和 iOS 的 IPA（不签名）。推送到 main 和改动相关代码的 PR 会构建一遍，
+# 安装包在这次运行的 Artifacts 里下载；发布时由 release.yml 调用。
 on:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "core/**"
+      - "desktop/**"
       - "mobile/**"
       - "android/**"
       - "ios/**"
@@ -56,6 +60,11 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@$ver golang.org/x/mobile/cmd/gobind@$ver
           gomobile init
 
+      # 界面：和桌面客户端同一份 MyGo 代码编成 WebAssembly，App 打包时从 desktop/build/web 复制
+      - name: Build the UI
+        working-directory: desktop
+        run: go tool mygo build -platform web
+
       - name: Bind the Go core
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
@@ -101,6 +110,11 @@ jobs:
           go install golang.org/x/mobile/cmd/gomobile@$ver golang.org/x/mobile/cmd/gobind@$ver
           gomobile init
           brew install xcodegen
+
+      # 界面：和桌面客户端同一份 MyGo 代码编成 WebAssembly，App 打包时从 desktop/build/web 复制
+      - name: Build the UI
+        working-directory: desktop
+        run: go tool mygo build -platform web
 
       - name: Bind the Go core
         run: |

@@ -88,13 +88,67 @@ func TestSettingsValidate(t *testing.T) {
 	}
 }
 
-func TestRingLog(t *testing.T) {
-	r := newRingLog(3)
-	r.Write([]byte("a\nb\n"))
-	r.Write([]byte("c\n"))
-	r.Write([]byte("d\n"))
-	if got := strings.Join(r.Lines(), ","); got != "b,c,d" {
-		t.Fatalf("got %q", got)
+func TestLogBook(t *testing.T) {
+	var out strings.Builder
+	b := newLogBook(3, &out, LevelInfo)
+	b.add(LevelDebug, "", "", "看不到")
+	b.add(LevelInfo, "", "", "a")
+	b.add(LevelWarn, "1", "小明", "b %d", 1)
+	b.add(LevelError, "", "", "c")
+	b.add(LevelInfo, "", "", "d")
+	msgs := func(es []LogEntry) string {
+		var s []string
+		for _, en := range es {
+			s = append(s, en.Msg)
+		}
+		return strings.Join(s, ",")
+	}
+	if got := msgs(b.since(0, LevelDebug)); got != "b 1,c,d" {
+		t.Fatalf("保留最近 3 条，got %q", got)
+	}
+	if got := msgs(b.since(0, LevelWarn)); got != "b 1,c" {
+		t.Fatalf("按级别筛选，got %q", got)
+	}
+	all := b.since(0, LevelDebug)
+	if got := msgs(b.since(all[0].Seq, LevelDebug)); got != "c,d" {
+		t.Fatalf("按序号取后面的，got %q", got)
+	}
+	if got := msgs(b.since(all[2].Seq, LevelDebug)); got != "" {
+		t.Fatalf("已经是最新的，got %q", got)
+	}
+	if got := msgs(b.since(all[2].Seq+100, LevelDebug)); got != "b 1,c,d" {
+		t.Fatalf("重启后客户端拿着旧序号，应返回全部，got %q", got)
+	}
+	if strings.Contains(out.String(), "看不到") || !strings.Contains(out.String(), "WARN  [小明] b 1") {
+		t.Fatalf("输出：%q", out.String())
+	}
+	if got := b.lines(2); len(got) != 2 || !strings.HasSuffix(got[1], "INFO  d") {
+		t.Fatalf("lines：%q", got)
+	}
+
+	b.SetLevel(LevelDebug)
+	b.add(LevelDebug, "", "", "现在看得到")
+	if got := msgs(b.since(0, LevelDebug)); !strings.HasSuffix(got, "现在看得到") {
+		t.Fatalf("调低级别后，got %q", got)
+	}
+}
+
+func TestLevelJSON(t *testing.T) {
+	var s Settings
+	if err := json.Unmarshal([]byte(`{"log_level":"WARNING"}`), &s); err != nil || s.LogLevel != LevelWarn {
+		t.Fatalf("%v %v", s.LogLevel, err)
+	}
+	// 旧客户端保存设置时没有这个字段，应该是 info
+	s = Settings{}
+	if err := json.Unmarshal([]byte(`{}`), &s); err != nil || s.LogLevel != LevelInfo {
+		t.Fatalf("%v %v", s.LogLevel, err)
+	}
+	if err := json.Unmarshal([]byte(`{"log_level":"verbose"}`), &s); err == nil {
+		t.Fatal("verbose 应该报错")
+	}
+	b, _ := json.Marshal(Settings{LogLevel: LevelDebug})
+	if !strings.Contains(string(b), `"log_level":"debug"`) {
+		t.Fatalf("%s", b)
 	}
 }
 

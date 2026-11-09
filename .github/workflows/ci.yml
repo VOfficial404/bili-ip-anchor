@@ -24,6 +24,34 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
 
+  # 浏览器面板：core/web 是 webui 的构建结果，提交在仓库里，这里检查它和源码一致
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      # 文件名带内容哈希，源码变了会多出新文件，所以还要检查有没有未跟踪的文件
+      - name: 构建结果和提交的一致
+        working-directory: .
+        run: |
+          git diff --exit-code -- core/web
+          test -z "$(git status --porcelain -- core/web)" || (git status --porcelain -- core/web && exit 1)
+      # 不一致时把 CI 构建出来的文件传上来，方便对比
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-build
+          path: core/web
+
   # 桌面客户端的界面测试不开窗口，在 Windows 上跑（和大多数用户一样）
   desktop:
     runs-on: windows-latest
@@ -39,15 +67,3 @@ jobs:
         working-directory: desktop
       - run: go test ./desktop
 
-  # 只确认三个平台都能编译，不打安装包
-  desktop-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - run: go tool mygo build -platform windows/amd64,linux/amd64,darwin/arm64 -skip-installer -skip-dmg
-        working-directory: desktop

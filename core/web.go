@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -35,6 +36,7 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("GET /api/session/auto", e.handleSessionAuto)
 	mux.HandleFunc("DELETE /api/session", e.auth(e.handleSessionDelete))
 	mux.HandleFunc("GET /api/status", e.auth(e.handleStatus))
+	mux.HandleFunc("GET /api/logs", e.auth(e.handleLogs))
 	mux.HandleFunc("POST /api/run", e.auth(e.handleRunAll))
 	mux.HandleFunc("POST /api/accounts/{mid}/run", e.auth(e.handleAccountRun))
 	mux.HandleFunc("POST /api/accounts/{mid}/check", e.auth(e.handleAccountCheck))
@@ -60,7 +62,8 @@ func securityHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: https://*.hdslb.com; style-src 'self'; script-src 'self'")
+		// 面板用的 sonner 和 Radix 对话框会在运行时插入 <style>，所以样式放开 'unsafe-inline'；脚本仍然只允许本站文件
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: https://*.hdslb.com; style-src 'self' 'unsafe-inline'; script-src 'self'")
 		h.ServeHTTP(w, r)
 	})
 }
@@ -154,7 +157,7 @@ func (e *Engine) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		loginFailMu.Lock()
 		time.Sleep(time.Second)
 		loginFailMu.Unlock()
-		e.Logf("WebUI 密码错误（来自 %s）", r.RemoteAddr)
+		e.Warnf("WebUI 密码错误（来自 %s）", r.RemoteAddr)
 		writeErr(w, http.StatusUnauthorized, "密码不对")
 		return
 	}
@@ -203,6 +206,21 @@ func (e *Engine) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 
 func (e *Engine) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, e.status())
+}
+
+// handleLogs 返回日志。after 是上次拿到的最后一条的序号，只返回更新的；level 是最低级别。
+func (e *Engine) handleLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
+	min := LevelDebug
+	if s := q.Get("level"); s != "" {
+		var err error
+		if min, err = ParseLevel(s); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"level": e.LogLevel(), "entries": e.Logs(after, min)})
 }
 
 func (e *Engine) handleRunAll(w http.ResponseWriter, r *http.Request) {
@@ -365,7 +383,7 @@ func (e *Engine) handleImageAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	e.Logf("添加动态图片 %s", name)
+	e.Infof("添加动态图片 %s", name)
 	writeJSON(w, http.StatusOK, map[string]string{"name": name})
 }
 
@@ -389,7 +407,7 @@ func (e *Engine) handleImageDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	e.Logf("删除动态图片 %s", name)
+	e.Infof("删除动态图片 %s", name)
 	writeOK(w)
 }
 

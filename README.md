@@ -30,7 +30,7 @@
 
 ## 面板
 
-服务器上设置了 `WEBUI_PASSWORD` 后会提供一个网页面板；桌面客户端和手机 App 的界面是同一套，样子和 [MyGo](https://mygo.egoist.dev/) 原生 UI 的默认主题一致，跟随系统的浅色/深色模式，手机上导航在底部。四个页面：
+服务器上设置了 `WEBUI_PASSWORD` 后会提供一个网页面板，基于 [shadcn-admin](https://github.com/satnaing/shadcn-admin)：侧边栏可以折叠，手机浏览器上是抽屉；按 ⌘K / Ctrl+K 打开命令面板；浅色、深色或跟随系统。桌面客户端和手机 App 用 [MyGo](https://mygo.egoist.dev/) 画界面，两者是同一份代码（手机上编成 WebAssembly），窄屏时导航在底部。页面和功能三者一致：
 
 - **概览**：B 站把出口 IP 识别为哪里（目标属地），有几个账号的主页已经是目标属地，下一次运行时间。
 - **账号**：每个账号一张卡片：
@@ -44,8 +44,9 @@
   - 间隔、随机抖动；
   - 代理，可以「测试」看 B 站经过它识别为哪里；
   - 心跳视频：可以添加多个，粘贴 BV 号或视频链接，会显示标题、封面、UP 主和时长；
-  - 动态：开关、文字、最多 9 张图片，并预览每轮会发什么。
-- **日志**：最近 300 行运行日志，每行带账号名。
+  - 动态：开关、文字、最多 9 张图片，并预览每轮会发什么；
+  - 日志级别：调试、信息、警告、错误，低于它的不记录。
+- **日志**：最近 1000 条运行日志，每条带级别和账号名，可以按级别（全部、信息及以上、警告及以上、只看错误）和账号筛选，打开时自动拉取新的。「调试」级别会记下每一个发往 B 站的请求，排查问题时再打开。
 
 侧边栏底部显示连的是哪里（面板地址或「本机运行」）以及 B 站看到的出口 IP。
 
@@ -220,14 +221,16 @@ systemctl daemon-reload && systemctl enable --now bili-ip-anchor
 - **Android**：`bili-ip-anchor-*.apk`，Android 7.0 及以上。
 - **iOS**：`bili-ip-anchor-*-unsigned.ipa`，没有签名，需要用 [AltStore](https://altstore.io/)、[SideStore](https://sidestore.io/) 之类的工具用你自己的 Apple ID 签名安装。iOS 16 及以上。
 
-打开后和桌面客户端一样选择用法：
+界面和桌面客户端是同一份代码，打开后一样选择用法：
 
-- **连接服务器**：填面板的 HTTPS 地址，在下一页输入面板密码。
+- **连接服务器**：填面板地址和面板密码，可以记住密码、下次自动连接。请求由 App 自己转发，不经过手机浏览器。
 - **在本机运行**：填手机上代理软件的本地端口（例如 Clash Meta for Android 的混合端口 `http://127.0.0.1:7890`）。
-  - **Android** 会显示一条「正在本机运行」的常驻通知，App 退到后台后定时任务继续跑。手机深度休眠时可能推迟到下次唤醒再运行。
+  - **Android** 会显示一条「正在本机运行」的常驻通知（点通知里的「停止」可以直接停下），App 退到后台后定时任务继续跑。App 被系统清理或手机重启后，再次打开会用同一个代理接着运行。手机深度休眠时可能推迟到下次唤醒再运行。
   - **iOS** 不允许 App 在后台一直运行：只有 App 在前台时才会运行，切回 App 时补上错过的那一轮。iPhone 更适合用来连服务器。
 
-在面板里按返回键（Android）或点左上角「首页」（iOS）回到第一页，可以换服务器或停止本机运行。
+在界面里点「断开连接」或「停止运行」回到第一页，可以换服务器或换用法。Android 上按返回键只是退到后台。
+
+给账号扫码登录时，B 站 App 和本 App 在同一台手机上：把二维码截图，再在 B 站 App 的「扫一扫」里点相册选这张截图。
 
 > GitHub 上构建的 APK 在没有配置签名密钥时用临时的调试密钥签名，新版本覆盖安装可能提示签名不一致，卸载旧版再装即可（本机模式的账号需要重新扫码）。
 
@@ -247,9 +250,10 @@ systemctl daemon-reload && systemctl enable --now bili-ip-anchor
 | `DYNAMIC_TEXT` | 空 | 动态的文字。图片在面板的设置页上传 |
 | `PROXY` | 空 | 所有 B 站请求经过的代理（`http://`、`socks5://`），空表示直连 |
 | `DATA_DIR` | 镜像内 `/data`；二进制为所在目录 | `accounts/`（各账号会话）、`dynamic/`（动态图片）、`settings.json` 存放位置 |
+| `LOG_LEVEL` | `info` | 日志级别：`debug`、`info`、`warn`、`error`，低于它的不记录。`debug` 会记下每一个发往 B 站的请求 |
 | `TZ` | `Asia/Shanghai` | 日志时区 |
 
-`INTERVAL`、`JITTER`、`BVIDS`、`DO_DYNAMIC`、`DYNAMIC_TEXT`、`PROXY` 在面板里保存过之后，以 `data/settings.json` 为准，环境变量不再生效。想恢复用环境变量，删除这个文件并重启即可。
+`INTERVAL`、`JITTER`、`BVIDS`、`DO_DYNAMIC`、`DYNAMIC_TEXT`、`PROXY`、`LOG_LEVEL` 在面板里保存过之后，以 `data/settings.json` 为准，环境变量不再生效。想恢复用环境变量，删除这个文件并重启即可。
 
 ### 动态内容
 
@@ -288,11 +292,12 @@ docker build -t bili-ip-anchor .
 
 | 目录 | 内容 |
 |---|---|
-| `core/` | 核心：账号会话、排程、B 站接口和面板（`core/web/`，编译时用 `go:embed` 打包） |
+| `core/` | 核心：账号会话、排程、B 站接口和面板（构建好的 `core/web/`，编译时用 `go:embed` 打包） |
+| `webui/` | 网页面板的源码：React、Vite、Tailwind、shadcn/ui，构建到 `core/web/` 并提交，所以只编译服务器时不需要它 |
 | `.`（`main.go`） | 服务器命令行：`login`、`refresh`、`daemon` |
 | `desktop/` | 桌面客户端，用 [MyGo](https://mygo.egoist.dev/) 写成，不需要 cgo，任何系统上都能交叉编译三个平台 |
-| `mobile/` | 手机 App 的 Go 接口，用 gomobile 编译；`mobile/shell/setup.html` 是两个 App 共用的第一页 |
-| `android/`、`ios/` | 手机 App 的外壳：Kotlin 和 Swift，界面用 WebView 打开面板 |
+| `mobile/` | 手机 App 的 Go 核心，用 gomobile 编译：在 127.0.0.1 上提供界面（`desktop/` 编成的 WebAssembly）和接口，App 只是一个 WebView |
+| `android/`、`ios/` | 手机 App 的外壳：Kotlin 和 Swift，一个 WebView 打开 Go 核心提供的界面；Android 另有本机运行时的前台服务 |
 
 桌面客户端：
 
@@ -307,15 +312,27 @@ go tool mygo build -platform windows/amd64          # 打包到 desktop/build/wi
 - 图标也是用 MyGo 画的：`GEN_ICON=1 go test ./desktop -run 'TestGenerate'` 重新生成桌面、托盘和手机图标。
 - 想不登录账号看看面板：`DEMO_ADDR=127.0.0.1:8099 go test ./core -run TestServeDemo -timeout 0`，用模拟数据启动面板，密码见 `core/demo_test.go`。
 
-手机 App（需要 Android SDK 和 NDK，或 Xcode；步骤见 [`.github/workflows/mobile.yml`](.github/workflows/mobile.yml)）：
+网页面板（需要 [Bun](https://bun.sh/)）：
 
 ```bash
+cd webui
+bun install
+bun run dev     # 开发：接口转发到 BIA_API（默认 http://127.0.0.1:18099，上面的模拟面板）
+bun run build   # 构建到 core/web/，改了 webui/ 要把它一起提交，CI 会检查两者一致
+```
+
+手机 App（需要 Android SDK 和 NDK，或 Xcode；步骤见 [`.github/workflows/mobile.yml`](.github/workflows/mobile.yml)）。先把界面编成 WebAssembly，两个 App 打包时都从 `desktop/build/web` 取：
+
+```bash
+(cd desktop && go tool mygo build -platform web)
 go install golang.org/x/mobile/cmd/gomobile@latest golang.org/x/mobile/cmd/gobind@latest && gomobile init
 gomobile bind -target=android -androidapi 24 -o android/app/libs/bia.aar ./mobile && gradle -p android assembleRelease
 gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile && (cd ios && xcodegen generate)   # 然后用 Xcode 打开
 ```
 
-镜像由 GitHub Actions 自动构建并发布到 `ghcr.io/vofficial404/bili-ip-anchor`（`linux/amd64`、`linux/arm64`）。推送到 `main` 更新 `latest` 标签；推送 `v*` 标签时发布版本号标签，并在同一个 Release 里附上服务器二进制、桌面安装包、APK 和 IPA（标签要和 `desktop/mygo.json` 的 `version` 一致）。
+镜像由 GitHub Actions 自动构建并发布到 `ghcr.io/vofficial404/bili-ip-anchor`（`linux/amd64`、`linux/arm64`）。推送到 `main` 更新 `latest` 标签；推送 `v*` 标签时发布版本号标签，并在同一个 Release 里附上服务器二进制、桌面安装包、APK 和 IPA（标签要和 `desktop/mygo.json` 的 `version` 一致）。推送到 `main` 时也会构建桌面安装包、APK 和 IPA，在那次运行（Actions → Desktop / Mobile）的 Artifacts 里下载，用来试还没发布的版本。
+
+想在电脑浏览器里试手机界面：先编译界面，再 `MOBILE_DEMO_ADDR=127.0.0.1:18078 go test ./mobile -run TestServeHost -timeout 0`，打开日志里的入口地址，用开发者工具切到手机尺寸。
 
 ## 致谢
 
