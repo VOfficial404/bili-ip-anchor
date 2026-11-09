@@ -134,14 +134,7 @@ func (a *app) remoteForm(c *ui.Context) {
 }
 
 func (a *app) localForm(c *ui.Context) {
-	after := "关掉窗口后程序在托盘里继续运行。"
-	switch a.platform {
-	case "android":
-		after = "退出界面后在通知栏里继续运行。"
-	case "ios":
-		after = "iOS 只在 App 打开时运行，切到后台就会暂停。"
-	}
-	muted(c, "没有服务器也可以用："+a.device()+"定时以账号身份发请求，经过代理出去，B 站看到的是代理的出口 IP。看视频不经过它。"+after).FontSize(13)
+	muted(c, "没有服务器也可以用："+a.device()+"定时以账号身份发请求，经过代理出去，B 站看到的是代理的出口 IP。看视频不经过它。关掉窗口后程序在托盘里继续运行。").FontSize(13)
 	ui.Field(c, "代理", func() {
 		ui.Row(c).Gap(8).Children(func() {
 			if ui.TextInput(c.Key("proxy"), &a.proxy).Placeholder("http://127.0.0.1:7890").Font("monospace").Disabled(a.connecting).Grow(1).Submitted() {
@@ -653,6 +646,10 @@ func (a *app) accountCard(c *ui.Context, acc account) {
 			})
 		}
 
+		if !a.oldServer() {
+			a.favRow(c, acc, busy)
+		}
+
 		msg := ""
 		switch {
 		case !acc.LoggedIn:
@@ -794,6 +791,70 @@ func (a *app) cookieTile(c *ui.Context, acc account, busy bool) {
 			ui.Icon(c, iconRefresh)
 			ui.Text(c, label).SingleLine()
 		})
+	})
+}
+
+// favRow 是账号卡片底部的收藏夹一栏：导出、导入和导入进度
+func (a *app) favRow(c *ui.Context, acc account, busy bool) {
+	t := c.Theme()
+	fb := a.favBusy[acc.Mid]
+	off := busy || !acc.LoggedIn || fb != ""
+	ui.Column(c.Key("fav")).Gap(6).Children(func() {
+		ui.Row(c).Gap(8).Wrap().Children(func() {
+			ui.Row(c).Gap(6).Grow(1).Basis(200).Children(func() {
+				ui.Icon(c, iconFolder).TextColor(t.TextMuted)
+				muted(c, "收藏夹 · 导出成文件，可以导入到这个或别的账号").FontSize(12).Shrink(1)
+			})
+			label := "导出"
+			if fb == "export" {
+				label = "正在导出"
+			}
+			ui.Button(c.Key("fav-export"), label).Disabled(off).OnClick(func() { a.exportFav(acc.Mid) })
+			ui.Button(c.Key("fav-import"), "导入").Disabled(off).OnClick(func() { a.importFav(acc.Mid) })
+		})
+		j := acc.Fav
+		if j == nil {
+			return
+		}
+		head := "导入完成"
+		switch {
+		case j.Running && j.Folder != "":
+			head = "正在导入「" + j.Folder + "」"
+		case j.Running:
+			head = "正在导入"
+		case j.Error != "":
+			head = "导入中途停下"
+		}
+		ui.Row(c).Gap(8).Children(func() {
+			h := ui.Text(c, head).FontSize(12).Bold().Grow(1).Shrink(1)
+			if j.Error != "" {
+				h.TextColor(t.Danger)
+			}
+			n := fmt.Sprintf("%d/%d", j.Done, j.Total)
+			if j.Finished != nil {
+				n += " · " + a.fmtTime(*j.Finished)
+			}
+			muted(c, n).FontSize(12)
+		})
+		v := 1.0
+		if j.Total > 0 {
+			v = float64(j.Done) / float64(j.Total)
+		}
+		ui.Progress(c, v)
+		counts := []string{fmt.Sprintf("新增 %d", j.Added), fmt.Sprintf("已有 %d", j.Skipped)}
+		if j.Failed > 0 {
+			counts = append(counts, fmt.Sprintf("失败 %d", j.Failed))
+		}
+		if len(j.Created) > 0 {
+			counts = append(counts, "新建了「"+strings.Join(j.Created, "」「")+"」")
+		}
+		muted(c, strings.Join(counts, " · ")).FontSize(12)
+		if j.Error != "" {
+			ui.Text(c, j.Error).FontSize(12).TextColor(t.Danger).Selectable()
+		}
+		for _, f := range j.Failures {
+			muted(c, fmt.Sprintf("%s %s — %s", f.BVID, f.Title, f.Reason)).FontSize(12).Selectable()
+		}
 	})
 }
 
@@ -1103,10 +1164,6 @@ func (a *app) qrDialog(c *ui.Context) {
 			} else {
 				ui.Text(c, "授权查询主页属地").FontSize(17).Bold()
 				muted(c, fmt.Sprintf("用「%s」的 B 站 App 扫码并确认。这份授权只用来查询这个账号主页显示的 IP 属地，随时可以取消。", a.accountName(a.qrMid))).FontSize(13).TextAlign(ui.Center)
-			}
-			if a.phone {
-				ui.Text(c, "B 站 App 也在这台手机上：先截图，再在 B 站「扫一扫」里点相册，选这张截图。").
-					FontSize(12).TextAlign(ui.Center).Padding(6, 10).Radius(t.Radius).Background(t.Accent.Alpha(0.08))
 			}
 			ui.Box(c).Size(232, 232).Center().Padding(8).Radius(t.Radius*1.5).Background(ui.Hex("#ffffff")).Border(1, t.Border).Children(func() {
 				switch {

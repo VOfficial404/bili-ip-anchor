@@ -1,17 +1,15 @@
 package mobile
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/VOfficial404/bili-ip-anchor/core"
 )
 
 // fakeBili 模拟 B 站的出口 IP 查询；别的请求（测试里的假服务器）照常发出
@@ -46,225 +44,170 @@ func (r *recorder) String() string {
 	return string(b)
 }
 
-type tclient struct {
-	t    *testing.T
-	base string
-	http *http.Client
-}
-
-func (c *tclient) do(method, path string, in any, out any) int {
-	c.t.Helper()
-	var body io.Reader
-	if in != nil {
-		b, _ := json.Marshal(in)
-		body = bytes.NewReader(b)
-	}
-	req, _ := http.NewRequest(method, c.base+path, body)
-	req.Header.Set("X-Requested-With", "bia")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if out != nil {
-		json.NewDecoder(resp.Body).Decode(out)
-	}
-	return resp.StatusCode
-}
-
-func TestHost(t *testing.T) {
+func setup(t *testing.T) (string, *recorder) {
+	t.Helper()
 	transport = fakeBili{}
 	rec := &recorder{}
 	SetListener(rec)
-	defer func() { transport = nil; SetListener(nil) }()
-	SetTimeZone("Asia/Shanghai")
-
-	web, data := t.TempDir(), t.TempDir()
-	os.WriteFile(filepath.Join(web, "index.html"), []byte(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1" /></head><body></body></html>`), 0o644)
-	os.WriteFile(filepath.Join(web, "app.wasm"), []byte("wasm"), 0o644)
-
-	if _, err := EnterURL(); err == nil {
-		t.Fatal("没开始时不应有入口地址")
-	}
-	entry, err := Start(web, data)
-	if err != nil {
+	t.Cleanup(func() { Shutdown(); transport = nil; SetListener(nil) })
+	dir := t.TempDir()
+	if err := Open(dir); err != nil {
 		t.Fatal(err)
 	}
-	defer Shutdown()
-	base := entry[:strings.Index(entry, "/host/")]
+	return dir, rec
+}
 
-	// 没打开过入口地址的（例如手机上的其他 App）不能用接口
-	if resp, _ := http.Get(base + "/host/state"); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("没有 Cookie 时 HTTP %d", resp.StatusCode)
-	}
-	// 别的域名解析到 127.0.0.1 也不行
-	req, _ := http.NewRequest("GET", base+"/", nil)
-	req.Host = "evil.example:80"
-	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("Host 不对时 HTTP %d", resp.StatusCode)
-	}
-
-	jar, _ := cookiejar.New(nil)
-	c := &tclient{t: t, base: base, http: &http.Client{Jar: jar}}
-	resp, err := c.http.Get(entry)
-	if err != nil {
+func state(t *testing.T) map[string]any {
+	t.Helper()
+	var st map[string]any
+	if err := json.Unmarshal([]byte(State()), &st); err != nil {
 		t.Fatal(err)
 	}
-	page, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(page), "pointercancel") || !strings.Contains(string(page), "user-scalable=no") {
-		t.Fatalf("首页没有插入触摸脚本：%s", page)
-	}
-	if resp, _ := http.Get(entry); resp.StatusCode != http.StatusForbidden {
-		t.Fatal("入口地址只能用一次")
-	}
-	if resp, _ := c.http.Get(base + "/app.wasm"); resp.StatusCode != 200 {
-		t.Fatal("界面文件打不开")
-	}
+	return st
+}
 
-	// 写操作要带 X-Requested-With
-	req, _ = http.NewRequest("PUT", base+"/host/prefs", strings.NewReader(`{}`))
-	if resp, _ := c.http.Do(req); resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("没有 X-Requested-With 时 HTTP %d", resp.StatusCode)
+func call(t *testing.T, method, path, body string) *Response {
+	t.Helper()
+	var b []byte
+	if body != "" {
+		b = []byte(body)
 	}
-	if code := c.do("PUT", "/host/prefs", map[string]any{"mode": "remote", "server": "https://example.com"}, nil); code != 200 {
-		t.Fatalf("保存连接信息 HTTP %d", code)
+	resp, err := Call(method, path, b)
+	if err != nil {
+		t.Fatalf("%s %s：%v", method, path, err)
 	}
-	c.do("PUT", "/host/password", map[string]string{"password": "secret"}, nil)
-	var st struct {
-		Prefs struct {
-			Server string `json:"server"`
-		} `json:"prefs"`
-		Password     string `json:"password"`
-		LocalRunning bool   `json:"local_running"`
-		Platform     string `json:"platform"`
-	}
-	c.do("GET", "/host/state", nil, &st)
-	if st.Prefs.Server != "https://example.com" || st.Password != "secret" || st.LocalRunning || st.Platform == "" {
-		t.Fatalf("state %+v", st)
-	}
-	c.do("DELETE", "/host/password", nil, nil)
-	c.do("GET", "/host/state", nil, &st)
-	if st.Password != "" {
-		t.Fatal("密码没有删掉")
-	}
+	return resp
+}
 
-	// 本机运行
-	if code := c.do("POST", "/host/local", map[string]string{"proxy": "127.0.0.1"}, nil); code != http.StatusBadRequest {
-		t.Fatalf("没有端口的代理应该被拒绝，HTTP %d", code)
+func TestLocal(t *testing.T) {
+	dir, rec := setup(t)
+	if st := state(t); st["mode"] != ModeNone || st["local_running"] != false {
+		t.Fatalf("一开始的状态不对：%v", st)
 	}
-	var run struct {
-		Password string `json:"password"`
-		Zone     struct {
-			Addr string `json:"addr"`
-		} `json:"zone"`
+	if r := call(t, "GET", "/api/status", ""); r.Status != 409 {
+		t.Errorf("没选用法时应该返回 409，得到 %d", r.Status)
 	}
-	if code := c.do("POST", "/host/local", map[string]string{"proxy": "http://127.0.0.1:7890"}, &run); code != 200 || run.Password == "" || run.Zone.Addr != "203.0.113.8" {
-		t.Fatalf("本机运行 HTTP %d %+v", code, run)
+	if _, err := StartLocal(""); err == nil {
+		t.Error("没填代理应该报错")
+	}
+	if _, err := StartLocal("ftp://x"); err == nil {
+		t.Error("不支持的代理应该报错")
+	}
+	out, err := StartLocal("http://127.0.0.1:7890")
+	if err != nil || !strings.Contains(out, "广东") {
+		t.Fatalf("开始本机运行：%s %v", out, err)
 	}
 	if !LocalRunning() || rec.String() != "[true]" {
-		t.Fatalf("running=%v listener=%s", LocalRunning(), rec)
+		t.Fatalf("应该在运行并通知一次：%s", rec)
 	}
-	if code := c.do("POST", "/api/session", map[string]string{"password": run.Password}, nil); code != 200 {
-		t.Fatalf("登录本机面板 HTTP %d", code)
+	if st := state(t); st["mode"] != ModeLocal || st["proxy"] != "http://127.0.0.1:7890" {
+		t.Errorf("状态不对：%v", st)
 	}
+
+	// 会话由这里管：第一次请求自动登录
+	r := call(t, "GET", "/api/status", "")
 	var status struct {
-		Mode     string `json:"mode"`
-		Settings struct {
-			Proxy string `json:"proxy"`
-		} `json:"settings"`
+		Settings struct{ Proxy string } `json:"settings"`
 	}
-	if code := c.do("GET", "/api/status", nil, &status); code != 200 || status.Mode != "local" || status.Settings.Proxy != "http://127.0.0.1:7890" {
-		t.Fatalf("本机状态 HTTP %d %+v", code, status)
+	if !r.OK() || json.Unmarshal(r.Body, &status) != nil || status.Settings.Proxy != "http://127.0.0.1:7890" {
+		t.Fatalf("读状态：%d %s", r.Status, r.Body)
 	}
-	// 再开始一次只换代理
-	c.do("POST", "/host/local", map[string]string{"proxy": "socks5://127.0.0.1:7891"}, nil)
-	c.do("GET", "/api/status", nil, &status)
-	if status.Settings.Proxy != "socks5://127.0.0.1:7891" || rec.String() != "[true]" {
-		t.Fatalf("换代理 %+v listener=%s", status, rec)
+	if r := call(t, "POST", "/api/accounts/404/favorites", `{"format":"bili-ip-anchor/favorites","version":1}`); r.Status != 404 || r.Message() == "" {
+		t.Errorf("不存在的账号：%d %s", r.Status, r.Message())
 	}
-	// App 被系统杀掉后重新开始：接着用同一个代理运行
+	if _, err := Call("GET", "/host/state", nil); err == nil {
+		t.Error("只能调用 /api/")
+	}
+
+	// 被系统结束不算用户停止：下次打开接着运行
 	Shutdown()
-	if _, err := Start(web, data); err != nil {
+	if err := Open(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := ResumeLocal(); err != nil || !LocalRunning() || rec.String() != "[true,false,true]" {
-		t.Fatalf("没有接着运行：%v listener=%s", err, rec)
+	if err := ResumeLocal(); err != nil || !LocalRunning() {
+		t.Fatalf("应该接着运行：%v", err)
 	}
-	entry, _ = EnterURL()
-	base = entry[:strings.Index(entry, "/host/")]
-	jar, _ = cookiejar.New(nil)
-	c = &tclient{t: t, base: base, http: &http.Client{Jar: jar}}
-	c.http.Get(entry)
+	if r := call(t, "GET", "/api/status", ""); !r.OK() {
+		t.Errorf("接着运行后读状态：%d", r.Status)
+	}
+
+	// 用户停止：用法还记着，但不再接着运行
 	StopLocal()
 	if LocalRunning() || rec.String() != "[true,false,true,false]" {
-		t.Fatalf("没有停下：listener=%s", rec)
+		t.Errorf("停止后的通知不对：%s", rec)
 	}
-	if ResumeLocal(); LocalRunning() {
-		t.Fatal("用户停止后不应再自动运行")
+	if r := call(t, "GET", "/api/status", ""); r.Status != 409 {
+		t.Errorf("停止后应该返回 409，得到 %d", r.Status)
 	}
-	if code := c.do("GET", "/api/status", nil, nil); code != http.StatusConflict {
-		t.Fatalf("停下后 HTTP %d", code)
+	if err := ResumeLocal(); err != nil || LocalRunning() {
+		t.Errorf("用户停止后不应该接着运行：%v", err)
 	}
-
-	// 连接服务器：/api/ 转发过去，服务器的 Secure Cookie 也能存下，App 的 Cookie 不发过去
-	var leaked bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := r.Cookie(hostCookie); err == nil {
-			leaked = true
-		}
-		switch r.URL.Path {
-		case "/panel/api/session":
-			http.SetCookie(w, &http.Cookie{Name: "bia_session", Value: "remote", Path: "/panel", Secure: true, Domain: "example.com"})
-			w.Write([]byte(`{"ok":true}`))
-		case "/panel/api/status":
-			if c, err := r.Cookie("bia_session"); err != nil || c.Value != "remote" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			w.Write([]byte(`{"mode":"server"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	if code := c.do("POST", "/host/remote", map[string]string{"server": "ftp://x"}, nil); code != http.StatusBadRequest {
-		t.Fatalf("地址不对时 HTTP %d", code)
+	if st := state(t); st["mode"] != ModeLocal {
+		t.Errorf("停止后用法应该还在：%v", st)
 	}
-	if code := c.do("POST", "/host/remote", map[string]string{"server": srv.URL + "/panel"}, nil); code != 200 {
-		t.Fatalf("连接服务器 HTTP %d", code)
-	}
-	c.do("POST", "/api/session", map[string]string{"password": "x"}, nil)
-	if code := c.do("GET", "/api/status", nil, &status); code != 200 || status.Mode != "server" {
-		t.Fatalf("经过转发 HTTP %d %+v", code, status)
-	}
-	if leaked {
-		t.Error("App 的 Cookie 发给了服务器")
-	}
-
-	if code := c.do("GET", "/host/image?u=https://evil.example/a.png", nil, nil); code != http.StatusBadRequest {
-		t.Fatalf("非 B 站图床 HTTP %d", code)
-	}
-	var z struct {
-		Province string `json:"province"`
-	}
-	if code := c.do("POST", "/host/probe", map[string]string{"proxy": "http://127.0.0.1:7890"}, &z); code != 200 || z.Province != "广东" {
-		t.Fatalf("probe HTTP %d %+v", code, z)
+	Disconnect()
+	if st := state(t); st["mode"] != ModeNone {
+		t.Errorf("回到首页后用法应该清掉：%v", st)
 	}
 }
 
-// 在浏览器里试手机界面：先 cd desktop && go tool mygo build -platform web，再
-// MOBILE_DEMO_ADDR=127.0.0.1:18077 go test -run TestServeHost -timeout 0 ./mobile，打开日志里的入口地址
-func TestServeHost(t *testing.T) {
-	addr := os.Getenv("MOBILE_DEMO_ADDR")
-	if addr == "" {
-		t.Skip("设置 MOBILE_DEMO_ADDR=127.0.0.1:18077 启动")
+func TestRemote(t *testing.T) {
+	dir, _ := setup(t)
+	e := core.New(core.Config{DataDir: t.TempDir(), Version: "v-test", Password: "pw", Defaults: core.DefaultSettings(), Transport: fakeBili{}})
+	srv := httptest.NewServer(e.Handler())
+	defer srv.Close()
+
+	if err := ConnectServer("", "pw", false); err == nil {
+		t.Error("没填地址应该报错")
 	}
-	listenAddr = addr
-	entry, err := Start(filepath.Join("..", "desktop", "build", "web"), t.TempDir())
-	if err != nil {
+	if err := ConnectServer(srv.URL, "wrong", true); err == nil {
+		t.Error("密码不对应该报错")
+	}
+	if st := state(t); st["mode"] != ModeNone {
+		t.Fatalf("登录失败不应该记住：%v", st)
+	}
+	if err := ConnectServer(strings.TrimPrefix(srv.URL, "http://")+"/", "pw", true); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("入口地址：", entry)
-	select {}
+	if st := state(t); st["mode"] != ModeRemote || st["server"] != srv.URL || st["remember"] != true {
+		t.Fatalf("状态不对：%v", st)
+	}
+	r := call(t, "GET", "/api/status", "")
+	if !r.OK() || !strings.Contains(string(r.Body), "v-test") {
+		t.Fatalf("读服务器状态：%d %s", r.Status, r.Body)
+	}
+	if r := call(t, "POST", "/api/qr", ""); r.Status == 401 || r.Status == 403 {
+		t.Errorf("写操作要带 X-Requested-With：%d %s", r.Status, r.Body)
+	}
+
+	// 重新打开 App：会话没有了，用记住的密码重新登录
+	Shutdown()
+	if err := Open(dir); err != nil {
+		t.Fatal(err)
+	}
+	if r := call(t, "GET", "/api/status", ""); !r.OK() {
+		t.Fatalf("应该自动重新登录：%d %s", r.Status, r.Body)
+	}
+
+	// 不记住密码：会话没有了要重新输入
+	if err := ConnectServer(srv.URL, "pw", false); err != nil {
+		t.Fatal(err)
+	}
+	Shutdown()
+	Open(dir)
+	if r := call(t, "GET", "/api/status", ""); r.Status != 401 {
+		t.Errorf("没记住密码时应该返回 401，得到 %d", r.Status)
+	}
+	Disconnect()
+	if st := state(t); st["mode"] != ModeNone || st["remember"] != false {
+		t.Errorf("回到首页后应该清掉：%v", st)
+	}
+}
+
+func TestImage(t *testing.T) {
+	for _, u := range []string{"https://example.com/a.jpg", "file:///etc/passwd", "https://hdslb.com.evil.cn/a.jpg"} {
+		if _, err := Image(u); err == nil {
+			t.Errorf("%s 应该被拒绝", u)
+		}
+	}
 }

@@ -1,129 +1,165 @@
-import Mobile
-import UIKit
-import WebKit
+import SwiftUI
 
-/// Go 核心（mobile/mobile.go）：在 127.0.0.1 上提供界面（和桌面客户端同一份 MyGo 代码编成的 WebAssembly）和接口。
+/// 原生 SwiftUI 界面。Go 核心（mobile/mobile.go）负责定时任务和服务器的连接，界面通过 Core.call 调用面板接口。
 /// iOS 不允许 App 在后台一直运行：切到后台后本机的定时任务暂停，回到前台时按墙上时间补上。
-enum Core {
-    /// 开始（已经开始过就不再开始），返回 WebView 要打开的一次性入口地址
-    static func start() throws -> URL {
-        guard let web = Bundle.main.url(forResource: "web", withExtension: nil) else {
-            throw NSError(domain: "bia", code: 1, userInfo: [NSLocalizedDescriptionKey: "App 里没有界面文件"])
-        }
-        let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("data", isDirectory: true)
-        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
-        MobileSetTimeZone(TimeZone.current.identifier)
-        var err: NSError?
-        let s = MobileStart(web.path, data.path, &err)
-        if let err { throw err }
-        // 上次本机运行没有被用户停止（App 被系统关掉过）：接着运行
-        _ = MobileResumeLocal(&err)
-        if let err { throw err }
-        guard let u = URL(string: s) else {
-            throw NSError(domain: "bia", code: 2, userInfo: [NSLocalizedDescriptionKey: "入口地址不对"])
-        }
-        return u
-    }
-
-    /// 后台久了系统会收回监听的端口：关掉重新开始
-    static func restart() throws -> URL {
-        MobileShutdown()
-        return try start()
-    }
-}
-
 @main
-class AppDelegate: UIResponder, UIApplicationDelegate {
-    var window: UIWindow?
+struct BiliIPAnchorApp: App {
+    @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        window = UIWindow(frame: UIScreen.main.bounds)
-        window?.rootViewController = WebViewController()
-        window?.makeKeyAndVisible()
-        return true
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environmentObject(model)
+                .task { await model.start() }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                Task { await model.becameActive() }
+            }
+        }
     }
 }
 
-/// 唯一的页面：WKWebView 打开 Go 核心提供的界面。连接服务器、本机运行都在界面里选。
-class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
-    private var web: WKWebView!
-    private var origin: URL?
+/// 按阶段显示：启动中、启动失败、首页（选用法）、主界面
+struct RootView: View {
+    @EnvironmentObject var model: AppModel
 
-    override func loadView() {
-        let config = WKWebViewConfiguration()
-        // 界面用 window.open 打开 B 站视频等链接，在 createWebViewWith 里转到 Safari
-        config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        web = WKWebView(frame: .zero, configuration: config)
-        web.navigationDelegate = self
-        web.uiDelegate = self
-        web.scrollView.isScrollEnabled = false // 界面自己滚动
-        web.scrollView.contentInsetAdjustmentBehavior = .never
-        web.translatesAutoresizingMaskIntoConstraints = false
-        // 界面不知道刘海和底部横条在哪，WebView 只占安全区域
-        view = UIView()
-        view.backgroundColor = .systemBackground
-        view.addSubview(web)
-        let safe = view.safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
-            web.topAnchor.constraint(equalTo: safe.topAnchor),
-            web.bottomAnchor.constraint(equalTo: safe.bottomAnchor),
-            web.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
-            web.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
-        ])
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            switch model.phase {
+            case .loading:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .failed(let message):
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text("启动失败").font(.headline)
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("重试") { model.retryStart() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .setup:
+                SetupView()
+            case .main:
+                MainView()
+            }
+
+            if let notice = model.notice {
+                NoticeView(text: notice)
+                    .padding(.bottom, 72)
+            }
+        }
+        .alert(item: $model.alert) { a in
+            Alert(title: Text(a.title), message: Text(a.message), dismissButton: .default(Text("好")))
+        }
+    }
+}
+
+/// 主界面：底部四个标签
+struct MainView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        TabView(selection: $model.tab) {
+            OverviewView()
+                .tabItem { Label("概览", systemImage: "square.grid.2x2") }
+                .tag(MainTab.overview)
+            AccountsView()
+                .tabItem { Label("账号", systemImage: "person.2") }
+                .tag(MainTab.accounts)
+            SettingsView()
+                .tabItem { Label("设置", systemImage: "gearshape") }
+                .tag(MainTab.settings)
+            LogsView()
+                .tabItem { Label("日志", systemImage: "doc.plaintext") }
+                .tag(MainTab.logs)
+        }
+        // 界面显示时定时刷新状态；有账号在运行或导入时刷得快一些
+        .task {
+            while !Task.isCancelled {
+                await model.refresh()
+                let active = model.status?.accountList.contains { $0.isBusy || $0.favImport?.running == true } ?? false
+                try? await Task.sleep(nanoseconds: active ? 2_000_000_000 : 5_000_000_000)
+            }
+        }
+        .sheet(item: $model.qr) { target in
+            QRView(target: target)
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.needsPassword) {
+            PasswordSheet()
+                .environmentObject(model)
+                .interactiveDismissDisabled()
+        }
+    }
+}
+
+/// 服务器要求重新输入面板密码（重启过或者改了密码）
+struct PasswordSheet: View {
+    @EnvironmentObject var model: AppModel
+    @State private var password = ""
+    @State private var remember = true
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("面板密码", text: $password)
+                        .textContentType(.password)
+                        .submitLabel(.go)
+                        .onSubmit { Task { await submit() } }
+                    Toggle("记住密码", isOn: $remember)
+                } footer: {
+                    Text("服务器 \(model.core.server) 要求重新登录，可能是重启过或者改了密码。")
+                }
+                if let error {
+                    Section {
+                        Text(error).foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("重新输入密码")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("回到首页") { Task { await model.disconnect() } }
+                        .disabled(busy)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if busy {
+                        ProgressView()
+                    } else {
+                        Button("连接") { Task { await submit() } }
+                            .disabled(password.isEmpty)
+                    }
+                }
+            }
+        }
+        .onAppear { remember = model.core.remember }
     }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        load(Core.start)
-        NotificationCenter.default.addObserver(self, selector: #selector(foreground), name: UIApplication.willEnterForegroundNotification, object: nil)
-    }
-
-    private func load(_ entry: () throws -> URL) {
+    @MainActor
+    private func submit() async {
+        guard !password.isEmpty, !busy else { return }
+        busy = true
+        error = nil
         do {
-            let u = try entry()
-            origin = u
-            web.load(URLRequest(url: u))
+            try await model.connect(server: model.core.server, password: password, remember: remember)
+            model.needsPassword = false
+            await model.refresh()
         } catch {
-            let alert = UIAlertController(title: "打不开", message: error.localizedDescription, preferredStyle: .alert)
-            present(alert, animated: true)
+            self.error = error.localizedDescription
         }
-    }
-
-    /// 回到前台时看看界面的服务还在不在，不在就重新开始并重新打开界面
-    @objc private func foreground() {
-        guard let origin, let ping = URL(string: "/host/state", relativeTo: origin) else { return }
-        var req = URLRequest(url: ping, timeoutInterval: 2)
-        req.httpShouldHandleCookies = false
-        URLSession.shared.dataTask(with: req) { _, resp, _ in
-            if resp != nil { return } // 有回应（没有 Cookie 时是 403）就是还在
-            DispatchQueue.main.async { self.load(Core.restart) }
-        }.resume()
-    }
-
-    // WebView 的进程被系统收回：用新的入口地址重新打开界面
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        load(Core.start)
-    }
-
-    private func sameOrigin(_ u: URL) -> Bool {
-        guard let origin else { return false }
-        return u.scheme == origin.scheme && u.host == origin.host && u.port == origin.port
-    }
-
-    // 界面以外的链接用 Safari 打开
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let u = action.request.url else { return decisionHandler(.cancel) }
-        if sameOrigin(u) || u.scheme == "about" || u.scheme == "blob" {
-            return decisionHandler(.allow)
-        }
-        UIApplication.shared.open(u)
-        decisionHandler(.cancel)
-    }
-
-    // window.open 和 target="_blank"
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let u = action.request.url, !sameOrigin(u) { UIApplication.shared.open(u) }
-        return nil
+        busy = false
     }
 }

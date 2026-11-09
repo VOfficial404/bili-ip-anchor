@@ -6,12 +6,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 访问 B 站和服务器都由 Go 核心自己发出，不经过 Android 的网络库，所以不需要 networkSecurityConfig -->
     <application
         android:label="Bili IP Anchor"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"
-        android:allowBackup="false"
-        android:networkSecurityConfig="@xml/network_security_config">
+        android:allowBackup="false">
 
         <activity
             android:name=".MainActivity"

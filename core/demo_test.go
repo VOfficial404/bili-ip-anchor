@@ -14,7 +14,11 @@ import (
 func fakeBili() http.RoundTripper {
 	names := map[string]string{"10001": "小明同学", "10002": "测试小号", "10003": "很久以前的账号"}
 	homes := map[string]string{"10001": "广东", "10002": "北京"}
+	fav := newFakeFav()
 	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if resp, ok := fav.handle(r); ok {
+			return resp, nil
+		}
 		mid := ""
 		if c, err := r.Cookie("DedeUserID"); err == nil {
 			mid = c.Value

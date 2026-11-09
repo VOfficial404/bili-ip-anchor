@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -54,6 +56,61 @@ type account struct {
 	Cookie   cookieStatus  `json:"cookie"`
 	AppAuth  bool          `json:"app_auth"`
 	Home     *homeLocation `json:"home"`
+	Fav      *favImport    `json:"fav_import"` // v0.8 起有
+}
+
+// favImport 是导入收藏的进度，见 core/favorites.go 的 FavImport
+type favImport struct {
+	Running  bool   `json:"running"`
+	Folder   string `json:"folder"`
+	Total    int    `json:"total"`
+	Done     int    `json:"done"`
+	Added    int    `json:"added"`
+	Skipped  int    `json:"skipped"`
+	Failed   int    `json:"failed"`
+	Failures []struct {
+		BVID   string `json:"bvid"`
+		Title  string `json:"title"`
+		Reason string `json:"reason"`
+	} `json:"failures"`
+	Created  []string   `json:"created"`
+	Error    string     `json:"error"`
+	Finished *time.Time `json:"finished"`
+}
+
+// favFile 是导出的收藏夹文件里导入前要显示的部分
+type favFile struct {
+	Format  string `json:"format"`
+	Mid     string `json:"mid"`
+	Uname   string `json:"uname"`
+	Folders []struct {
+		Title  string `json:"title"`
+		Videos []struct {
+			Invalid bool `json:"invalid"`
+		} `json:"videos"`
+	} `json:"folders"`
+}
+
+const favFormat = "bili-ip-anchor/favorites"
+
+// parseFavFile 检查是不是导出的收藏夹文件，返回来源账号、收藏夹数和要导入的视频数
+func parseFavFile(data []byte) (from string, folders, videos int, err error) {
+	var f favFile
+	if json.Unmarshal(data, &f) != nil || f.Format != favFormat {
+		return "", 0, 0, errors.New("不是 bili-ip-anchor 导出的收藏夹文件")
+	}
+	for _, d := range f.Folders {
+		for _, v := range d.Videos {
+			if !v.Invalid {
+				videos++
+			}
+		}
+	}
+	from = f.Uname
+	if from == "" {
+		from = "UID " + f.Mid
+	}
+	return from, len(f.Folders), videos, nil
 }
 
 type zone struct {
@@ -339,6 +396,54 @@ func (c *client) logs(after int64) ([]logEntry, error) {
 	}
 	err := c.doJSON("GET", fmt.Sprintf("/api/logs?after=%d&level=debug", after), nil, &r)
 	return r.Entries, err
+}
+
+// exportFavorites 读出账号的全部收藏夹，返回服务器给的文件名和文件内容
+func (c *client) exportFavorites(mid string) (string, []byte, error) {
+	// 服务器要一页页读完所有收藏夹，可能超过平常的 30 秒
+	slow, hc := *c, *c.http
+	hc.Timeout = 5 * time.Minute
+	slow.http = &hc
+	resp, err := slow.do("GET", accountPath(mid, "favorites"), nil, "")
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return "", nil, err
+	}
+	name := "bili-favorites-" + mid + ".json"
+	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil && params["filename"] != "" {
+		name = path.Base(params["filename"])
+	}
+	return name, data, nil
+}
+
+// importFavorites 把导出的文件交给服务器在后台导入，返回要处理的视频数；进度在账号的 fav_import 里
+func (c *client) importFavorites(mid string, data []byte) (int, error) {
+	resp, err := c.send("POST", accountPath(mid, "favorites"), data, "application/json")
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		if err := c.login(); err != nil {
+			return 0, err
+		}
+		if resp, err = c.send("POST", accountPath(mid, "favorites"), data, "application/json"); err != nil {
+			return 0, err
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		return 0, responseError(resp)
+	}
+	var r struct {
+		Total int `json:"total"`
+	}
+	json.NewDecoder(resp.Body).Decode(&r)
+	return r.Total, nil
 }
 
 func (c *client) testProxy(proxy string) (zone, error) {

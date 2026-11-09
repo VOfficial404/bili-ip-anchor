@@ -1,10 +1,11 @@
-// 先编译界面（和桌面客户端同一份 MyGo 代码）：cd desktop && go tool mygo build -platform web，
-// 再用 gomobile 把 Go 核心编成 app/libs/bia.aar：
+// 界面是原生的 Jetpack Compose，没有单独的界面构建步骤。
+// 先用 gomobile 把 Go 核心编成 app/libs/bia.aar：
 //   gomobile bind -target=android/arm64,android/arm,android/amd64 -androidapi 24 -o android/app/libs/bia.aar ./mobile
-// 最后构建：gradle -p android assembleRelease -PversionName=0.7.0 -PversionCode=700
+// 再构建：gradle -p android assembleRelease -PversionName=0.8.0 -PversionCode=800
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // 有签名密钥时用它签名，否则用调试密钥（每次构建的机器不同，覆盖安装会提示签名不一致）
@@ -48,21 +49,23 @@ android {
         jvmTarget = "17"
     }
 
-    // 界面文件放在 assets/web，见下面的 copyWebUI
-    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("webui").get().asFile)
-}
-
-// 把 desktop/build/web 复制进 APK 的 assets/web
-val webUI = file("../../desktop/build/web")
-val copyWebUI = tasks.register<Sync>("copyWebUI") {
-    doFirst {
-        check(File(webUI, "index.html").isFile) { "没有界面文件，先运行 cd desktop && go tool mygo build -platform web" }
+    buildFeatures {
+        compose = true
     }
-    from(webUI)
-    into(layout.buildDirectory.dir("webui/web"))
 }
-tasks.named("preBuild") { dependsOn(copyWebUI) }
 
 dependencies {
     implementation(files("libs/bia.aar"))
+
+    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    implementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
+
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 }

@@ -48,7 +48,6 @@ type Engine struct {
 	qr         *QRLogin
 	tvqr       map[string]*tvLogin // 正在授权的账号
 	sessions   map[string]time.Time
-	autoTokens map[string]time.Time
 	videos     map[string]videoCache
 	transports map[string]*http.Transport
 
@@ -65,7 +64,6 @@ func New(cfg Config) *Engine {
 		accounts:   map[string]*account{},
 		tvqr:       map[string]*tvLogin{},
 		sessions:   map[string]time.Time{},
-		autoTokens: map[string]time.Time{},
 		videos:     map[string]videoCache{},
 		transports: map[string]*http.Transport{},
 		zoneKick:   make(chan struct{}, 1),

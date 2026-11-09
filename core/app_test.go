@@ -194,31 +194,6 @@ func TestAuth(t *testing.T) {
 	}
 }
 
-// 一次性登录令牌只能用一次
-func TestAutoLoginToken(t *testing.T) {
-	e := testEngine(t)
-	h := e.Handler()
-	token := e.AutoLoginToken()
-	get := func(tok string) *httptest.ResponseRecorder {
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", "/api/session/auto?token="+tok, nil))
-		return w
-	}
-	w := get(token)
-	if w.Code != http.StatusFound || len(w.Result().Cookies()) == 0 {
-		t.Fatalf("第一次应登录并跳转，得到 %d", w.Code)
-	}
-	if c := w.Result().Cookies()[0]; !e.validSession(c.Value) {
-		t.Error("拿到的会话无效")
-	}
-	if w := get(token); w.Code != http.StatusUnauthorized {
-		t.Errorf("第二次应 401，得到 %d", w.Code)
-	}
-	if w := get(""); w.Code != http.StatusUnauthorized {
-		t.Errorf("空令牌应 401，得到 %d", w.Code)
-	}
-}
-
 func TestDurationString(t *testing.T) {
 	for in, want := range map[time.Duration]string{
 		0:                       "0s",

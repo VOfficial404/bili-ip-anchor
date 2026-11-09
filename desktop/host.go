@@ -1,9 +1,7 @@
 package main
 
-// host 是界面之外、和所在系统有关的部分：
-//   - 桌面（host_native.go）：在进程里跑 core，直接访问网络；
-//   - 手机 App（host_web.go）：界面编译成 WebAssembly 在 WebView 里运行，
-//     这些事交给 App 外壳里的 Go 核心（mobile/host.go），通过同源的 /host/ 接口完成。
+// host 是界面之外、和所在系统有关的部分（host_native.go）：在进程里跑 core，直接访问网络。
+// 测试里换成假的。
 type host interface {
 	// remote 返回连接 server（已经整理过的地址）时 API 请求发往哪里
 	remote(server string) (string, error)

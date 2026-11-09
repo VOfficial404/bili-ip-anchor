@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 )
@@ -188,6 +189,7 @@ type account struct {
 	busy     string // 正在做的单项操作，例如「检查」「刷新 Cookie」
 	last     *runResult
 	next     time.Time
+	fav      *FavImport // 最近一次导入收藏的进度
 
 	trigger chan struct{}
 	resched chan struct{}
@@ -213,6 +215,7 @@ type accountStatus struct {
 	Cookie   cookieStatus  `json:"cookie"`
 	AppAuth  bool          `json:"app_auth"`
 	Home     *HomeLocation `json:"home"`
+	Fav      *FavImport    `json:"fav_import,omitempty"`
 }
 
 func (e *Engine) newAccount(mid string) *account {
@@ -397,6 +400,12 @@ func (acc *account) status() accountStatus {
 		Home:     acc.prof.Home,
 		AppAuth:  sess.AccessKey != "",
 		Cookie:   cookieStatus{CanRefresh: sess.RefreshToken != ""},
+	}
+	if acc.fav != nil {
+		fav := *acc.fav
+		fav.Failures = slices.Clone(fav.Failures)
+		fav.Created = slices.Clone(fav.Created)
+		st.Fav = &fav
 	}
 	if !sess.CookieExpires.IsZero() {
 		exp := sess.CookieExpires
