@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -22,7 +23,6 @@ var webFiles embed.FS
 const (
 	sessionCookie = "bia_session"
 	sessionTTL    = 7 * 24 * time.Hour
-	autoTokenTTL  = 2 * time.Minute
 )
 
 var loginFailMu sync.Mutex // 密码错误时串行等待，拖慢暴力尝试
@@ -33,7 +33,6 @@ func (e *Engine) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("POST /api/session", e.handleSessionCreate)
-	mux.HandleFunc("GET /api/session/auto", e.handleSessionAuto)
 	mux.HandleFunc("DELETE /api/session", e.auth(e.handleSessionDelete))
 	mux.HandleFunc("GET /api/status", e.auth(e.handleStatus))
 	mux.HandleFunc("GET /api/logs", e.auth(e.handleLogs))
@@ -45,6 +44,8 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("POST /api/accounts/{mid}/appauth", e.auth(e.handleTVStart))
 	mux.HandleFunc("GET /api/accounts/{mid}/appauth", e.auth(e.handleTVPoll))
 	mux.HandleFunc("DELETE /api/accounts/{mid}/appauth", e.auth(e.handleTVRemove))
+	mux.HandleFunc("GET /api/accounts/{mid}/favorites", e.auth(e.handleFavExport))
+	mux.HandleFunc("POST /api/accounts/{mid}/favorites", e.auth(e.handleFavImport))
 	mux.HandleFunc("PUT /api/settings", e.auth(e.handleSettings))
 	mux.HandleFunc("POST /api/qr", e.auth(e.handleQRStart))
 	mux.HandleFunc("GET /api/qr", e.auth(e.handleQRPoll))
@@ -165,35 +166,6 @@ func (e *Engine) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	writeOK(w)
 }
 
-// AutoLoginToken 生成一个一次性的登录令牌，手机 App 用它让 WebView 免密码进入面板
-func (e *Engine) AutoLoginToken() string {
-	token := randomHex(24)
-	e.mu.Lock()
-	for t, exp := range e.autoTokens {
-		if time.Now().After(exp) {
-			delete(e.autoTokens, t)
-		}
-	}
-	e.autoTokens[token] = time.Now().Add(autoTokenTTL)
-	e.mu.Unlock()
-	return token
-}
-
-// handleSessionAuto 用一次性令牌换面板会话，然后跳到首页
-func (e *Engine) handleSessionAuto(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	e.mu.Lock()
-	exp, ok := e.autoTokens[token]
-	delete(e.autoTokens, token)
-	e.mu.Unlock()
-	if token == "" || !ok || time.Now().After(exp) {
-		writeErr(w, http.StatusUnauthorized, "登录链接已失效")
-		return
-	}
-	e.newSession(w, r)
-	http.Redirect(w, r, "/", http.StatusFound)
-}
-
 func (e *Engine) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		e.mu.Lock()
@@ -271,6 +243,45 @@ func (e *Engine) handleAccountCheck(w http.ResponseWriter, r *http.Request) {
 	if acc := e.withAccount(w, r); acc != nil {
 		writeActionErr(w, e.checkAccount(acc))
 	}
+}
+
+// handleFavExport 把账号的收藏夹作为 JSON 文件下载
+func (e *Engine) handleFavExport(w http.ResponseWriter, r *http.Request) {
+	acc := e.withAccount(w, r)
+	if acc == nil {
+		return
+	}
+	x, err := e.ExportFavorites(acc.mid)
+	if err != nil {
+		writeActionErr(w, err)
+		return
+	}
+	name := fmt.Sprintf("bili-favorites-%s-%s.json", acc.mid, x.ExportedAt.Format("20060102"))
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	writeJSON(w, http.StatusOK, x)
+}
+
+// handleFavImport 收下导出的文件，在后台导入；进度看 status 里账号的 fav_import
+func (e *Engine) handleFavImport(w http.ResponseWriter, r *http.Request) {
+	acc := e.withAccount(w, r)
+	if acc == nil {
+		return
+	}
+	var x FavExport
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 20<<20)).Decode(&x); err != nil {
+		writeErr(w, http.StatusBadRequest, errBadFavFile.Error())
+		return
+	}
+	if err := ParseFavExport(&x); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	total, err := e.ImportFavorites(acc.mid, &x)
+	if err != nil {
+		writeActionErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int{"total": total})
 }
 
 func (e *Engine) handleCookieRefresh(w http.ResponseWriter, r *http.Request) {

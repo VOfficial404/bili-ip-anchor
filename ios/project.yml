@@ -1,6 +1,5 @@
 # XcodeGen 项目描述：xcodegen generate 生成 BiliIPAnchor.xcodeproj。
-# 先编译界面（和桌面客户端同一份 MyGo 代码）：cd desktop && go tool mygo build -platform web，
-# 再用 gomobile 把 Go 核心编成 Mobile.xcframework：
+# 界面是 SwiftUI 原生写的（Sources/），先用 gomobile 把 Go 核心编成 Mobile.xcframework：
 #   gomobile bind -target=ios -o ios/Mobile.xcframework ./mobile
 name: BiliIPAnchor
 options:
@@ -9,8 +8,8 @@ options:
     iOS: "16.0"
 settings:
   base:
-    MARKETING_VERSION: "0.7.0"
-    CURRENT_PROJECT_VERSION: "700"
+    MARKETING_VERSION: "0.8.0"
+    CURRENT_PROJECT_VERSION: "800"
 targets:
   BiliIPAnchor:
     type: application
@@ -18,10 +17,6 @@ targets:
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
-      # 界面文件，在 App 里是 web 文件夹
-      - path: ../desktop/build/web
-        type: folder
-        buildPhase: resources
     dependencies:
       - framework: Mobile.xcframework
         embed: false
@@ -43,7 +38,6 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
-        # WebView 只打开 Go 核心在 127.0.0.1 上提供的界面（http）；连接服务器、访问 B 站都由 Go 核心发出
-        NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+        # 扫码时可以把二维码存进相册，再在 B 站 App 里从相册扫
+        NSPhotoLibraryAddUsageDescription: 保存登录二维码，在 B 站 App 的「扫一扫」里从相册选这张图
     scheme: {}

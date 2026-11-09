@@ -1,23 +1,23 @@
 package io.github.vofficial404.biliipanchor
 
 import android.content.Context
+import android.util.Log
 import mobile.Listener
 import mobile.Mobile
 import java.io.File
 import java.util.TimeZone
 
 /**
- * Go 核心（mobile/mobile.go）：在 127.0.0.1 上提供界面（和桌面客户端同一份 MyGo 代码编成的 WebAssembly）
- * 和接口。界面和后台服务都通过这里开始它，同一个进程里只会开始一次。
+ * Go 核心（mobile/mobile.go）：管本机运行的定时任务和服务器的连接，界面通过 Mobile.call 调用面板接口。
+ * 界面和后台服务都通过这里打开它；重复调用没有关系，Open 只会打开一次。
  */
 object Core {
     const val TAG = "BiliIPAnchor"
 
-    /** 开始（已经开始过就不再开始），返回 WebView 要打开的一次性入口地址。会读写文件，不要在主线程上调用。 */
+    /** 打开核心；上次本机运行没有被用户停止时接着运行。会读写文件，不要在主线程上调用。 */
     @Synchronized
-    fun start(context: Context): String {
+    fun start(context: Context) {
         val app = context.applicationContext
-        val web = unpackWeb(app)
         Mobile.setTimeZone(TimeZone.getDefault().id)
         // 本机运行开始、停止时开关前台服务，让进程留在后台
         Mobile.setListener(object : Listener {
@@ -25,29 +25,12 @@ object Core {
                 if (running) AnchorService.start(app) else AnchorService.stop(app)
             }
         })
-        val url = Mobile.start(web.path, File(app.filesDir, "data").path)
+        Mobile.open(File(app.filesDir, "data").path)
         // 上次本机运行没有被用户停止（进程被回收、手机重启过）：接着运行
-        Mobile.resumeLocal()
-        return url
-    }
-
-    /** 把 APK 里的界面文件（assets/web）解压到 filesDir/web，Go 只能读普通文件。App 更新后重新解压。 */
-    private fun unpackWeb(context: Context): File {
-        val dir = File(context.filesDir, "web")
-        val stamp = File(dir, ".installed")
-        @Suppress("DEPRECATION")
-        val installed = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
-        if (stamp.isFile && stamp.readText() == installed) return dir
-        dir.deleteRecursively()
-        dir.mkdirs()
-        val names = context.assets.list("web").orEmpty()
-        check(names.contains("index.html")) { "APK 里没有界面文件" }
-        for (name in names) {
-            context.assets.open("web/$name").use { input ->
-                File(dir, name).outputStream().use { input.copyTo(it) }
-            }
+        try {
+            Mobile.resumeLocal()
+        } catch (e: Exception) {
+            Log.w(TAG, "接着本机运行失败", e)
         }
-        stamp.writeText(installed)
-        return dir
     }
 }

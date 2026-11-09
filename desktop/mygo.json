@@ -2,7 +2,7 @@
   "name": "Bili IP Anchor",
   "slug": "bili-ip-anchor-desktop",
   "identifier": "io.github.vofficial404.biliipanchor",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "copyright": "© 2026 VOfficial404",
   "out": "build",
   "linux": { "maintainer": "VOfficial404 <vofficial404@users.noreply.github.com>" }

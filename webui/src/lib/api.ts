@@ -47,6 +47,23 @@ export type Account = {
   cookie: { expires?: string; can_refresh: boolean }
   app_auth: boolean
   home: HomeLocation | null
+  fav_import?: FavImport
+}
+
+/* 导入收藏的进度，见 core/favorites.go */
+export type FavImport = {
+  running: boolean
+  folder?: string
+  total: number
+  done: number
+  added: number
+  skipped: number
+  failed: number
+  failures?: { bvid: string; title?: string; reason: string }[]
+  created?: string[]
+  error?: string
+  started: string
+  finished?: string
 }
 
 export type ImageInfo = { name: string; size: number }

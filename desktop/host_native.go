@@ -138,6 +138,27 @@ func pickImages() ([]picked, error) {
 	return out, err
 }
 
+var favFilter = []mygo.FileFilter{{Name: "收藏夹文件", Extensions: []string{"json"}}}
+
+// openFavFile 选择一个导出的收藏夹文件；取消时 path 为空
+func openFavFile() (string, []byte, error) {
+	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择导出的收藏夹文件", Filters: favFilter})
+	if err != nil || len(paths) == 0 {
+		return "", nil, err
+	}
+	data, err := readLimited(paths[0], 20<<20)
+	return paths[0], data, err
+}
+
+// saveFavFile 让用户选保存位置并写入导出的收藏夹；取消时 path 为空
+func saveFavFile(name string, data []byte) (string, error) {
+	p, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "保存收藏夹", DefaultPath: name, Filters: favFilter})
+	if err != nil || p == "" {
+		return "", err
+	}
+	return p, os.WriteFile(p, data, 0o644)
+}
+
 func readLimited(path string, max int64) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {

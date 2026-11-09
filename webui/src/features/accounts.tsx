@@ -13,6 +13,7 @@ import { Card } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { AccountAvatar, StateBadge, ToneBadge } from '@/components/account-bits'
 import { EmptyAccounts } from '@/components/empty-accounts'
+import { FavoritesRow } from '@/components/favorites'
 import { AccountActions, Page } from '@/components/layout/page'
 
 export function Accounts() {
@@ -264,6 +265,8 @@ function AccountCard({ a, s }: { a: Account; s: Status }) {
             </Button>
           </Tile>
         </div>
+
+        <FavoritesRow a={a} busy={busy} />
 
         {error && (
           <p role='alert' className='border-t bg-destructive/5 px-4 py-3 text-sm break-words text-destructive sm:px-5'>

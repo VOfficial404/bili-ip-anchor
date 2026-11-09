@@ -28,5 +28,6 @@ var (
 	iconShield = icon(`<path d="M12 3.5l7 3v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9v-5z"/><path d="M9 12l2 2 4-4"/>`)
 	iconTrash  = icon(`<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>`)
 	iconImage  = icon(`<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-9 8.5"/>`)
+	iconFolder = icon(`<path d="M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>`)
 	iconStop   = icon(`<rect x="6" y="6" width="12" height="12" rx="2"/>`)
 )

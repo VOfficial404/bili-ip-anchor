@@ -642,8 +642,8 @@ func TestNormalizeServer(t *testing.T) {
 	}
 }
 
-// v0.7 的服务器有分级日志；手机上窗口窄，侧边栏换成底部标签栏
-func TestPhoneLayoutAndLevelLogs(t *testing.T) {
+// v0.7 的服务器有分级日志；窗口窄时侧边栏换成底部标签栏
+func TestNarrowLayoutAndLevelLogs(t *testing.T) {
 	f := newFakeServer(t)
 	f.st.Version, f.st.LogLevel, f.st.Settings.LogLevel = "v0.7.0", "info", "info"
 	f.logs = []logEntry{
@@ -652,7 +652,6 @@ func TestPhoneLayoutAndLevelLogs(t *testing.T) {
 		{Seq: 3, Time: *at(-28), Level: "warn", Mid: "1003", Account: "UID 1003", Msg: "本轮失败：心跳被拒绝"},
 	}
 	h := newHarness(t, &memStore{})
-	h.a.phone = true
 	h.tt = ui.NewTester(h.a.view, 390, 1700)
 	h.connected(f)
 	if !h.a.narrow {

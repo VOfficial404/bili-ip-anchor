@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,7 +16,7 @@ import (
 )
 
 // version 要和 mygo.json 的 version 一致（version_test.go 检查）
-const version = "v0.7.0"
+const version = "v0.8.0"
 
 const (
 	pageOverview = "overview"
@@ -52,10 +53,10 @@ type app struct {
 	host      host
 	onLocal   func(running bool)       // 本机运行开始、停止时调用，main 用它显示托盘图标
 	pickFiles func() ([]picked, error) // 选择图片，在后台 goroutine 里调用
-
-	phone       bool   // 在手机 App 里（WebAssembly）
-	platform    string // 手机 App 的系统：android 或 ios
-	resumeLocal bool   // 手机 App 重新打开界面时，本机的定时任务还在跑
+	// 导入收藏夹时选文件、导出时选保存位置，在后台 goroutine 里调用；取消时返回空路径
+	openFav func() (path string, data []byte, err error)
+	saveFav func(name string, data []byte) (path string, err error)
+	favBusy map[string]string // 账号 → 正在导出或提交导入（export / import）
 
 	// 连接页
 	modeIdx    int // 0 连接服务器，1 在本机运行
@@ -130,6 +131,9 @@ func newApp(s store, post func(func())) *app {
 		host:        newHost(s),
 		now:         time.Now,
 		pickFiles:   pickImages,
+		openFav:     openFavFile,
+		saveFav:     saveFavFile,
+		favBusy:     map[string]string{},
 		server:      p.Server,
 		remember:    p.Remember,
 		proxy:       p.Proxy,
@@ -167,22 +171,16 @@ func (a *app) toast(msg string) { a.toasts = append(a.toasts, msg) }
 
 func (a *app) local() bool { return a.localOn }
 
-// device 是本机运行时「这台电脑」还是「这台手机」
-func (a *app) device() string {
-	if a.phone {
-		return "这台手机"
-	}
-	return "这台电脑"
-}
+// device 是本机运行时定时任务所在的地方
+func (a *app) device() string { return "这台电脑" }
 
 // oldServer 表示连的是 v0.5 及更早的服务器，没有账号详情、多个视频等功能
 func (a *app) oldServer() bool { return a.st != nil && a.st.Mode == "" }
 
 // autoConnect 在启动时自动连接：上次是本机运行并勾选了自动开始，或者记住了服务器密码
 func (a *app) autoConnect() {
-	if a.modeIdx == 1 || a.resumeLocal {
-		if (a.autoLocal || a.resumeLocal) && a.proxy != "" {
-			a.modeIdx = 1
+	if a.modeIdx == 1 {
+		if a.autoLocal && a.proxy != "" {
 			a.startLocal()
 		}
 		return
@@ -289,7 +287,6 @@ func (a *app) startLocal() {
 		}
 		return func() {
 			a.connecting = false
-			a.resumeLocal = false
 			if err != nil {
 				a.connectErr = err.Error()
 				return
@@ -563,6 +560,80 @@ func (a *app) accountAction(mid, method, action, done string) {
 		if done != "" {
 			a.toast(done)
 		}
+	})
+}
+
+/* 收藏夹：导出成文件，或者从文件导入 */
+
+// exportFav 读出账号的收藏夹，再让用户选保存的位置
+func (a *app) exportFav(mid string) {
+	cl, save := a.cl, a.saveFav
+	if cl == nil || a.favBusy[mid] != "" {
+		return
+	}
+	a.favBusy[mid] = "export"
+	a.async(func() func() {
+		name, data, err := cl.exportFavorites(mid)
+		path := ""
+		if err == nil {
+			path, err = save(name, data)
+		}
+		return func() {
+			delete(a.favBusy, mid)
+			switch {
+			case err != nil:
+				a.toast(err.Error())
+			case path != "":
+				a.toast("已导出到 " + path)
+			}
+		}
+	})
+}
+
+// importFav 选一个导出的文件，确认后交给服务器在后台导入
+func (a *app) importFav(mid string) {
+	open := a.openFav
+	if a.cl == nil || a.favBusy[mid] != "" {
+		return
+	}
+	a.favBusy[mid] = "import"
+	a.async(func() func() {
+		path, data, err := open()
+		var from string
+		var folders, videos int
+		if err == nil && path != "" {
+			from, folders, videos, err = parseFavFile(data)
+		}
+		return func() {
+			delete(a.favBusy, mid)
+			if err != nil {
+				a.toast(err.Error())
+				return
+			}
+			if path == "" {
+				return
+			}
+			minutes := max(1, int(math.Round(float64(videos)*2.5/60)))
+			a.askConfirm(fmt.Sprintf("导入到「%s」？", a.accountName(mid)),
+				fmt.Sprintf("来自「%s」的 %d 个收藏夹、%d 个视频。同名的收藏夹会合并，没有的会新建；已经收藏的视频跳过。"+
+					"为了不被 B 站限制，每个视频间隔两三秒，大约要 %d 分钟，期间这个账号不会运行定时任务。", from, folders, videos, minutes),
+				"开始导入", func() { a.submitFav(mid, data) })
+		}
+	})
+}
+
+func (a *app) submitFav(mid string, data []byte) {
+	a.favBusy[mid] = "import"
+	a.action(func(cl *client) error {
+		_, err := cl.importFavorites(mid, data)
+		return err
+	}, func(err error) {
+		delete(a.favBusy, mid)
+		if err != nil {
+			a.toast(err.Error())
+			return
+		}
+		a.toast("开始导入，进度显示在账号卡片上")
 	})
 }
 
