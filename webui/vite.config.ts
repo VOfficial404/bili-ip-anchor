@@ -22,6 +22,9 @@ export default defineConfig({
     assetsDir: 'assets',
     // 面板只在新浏览器和系统 WebView 里打开
     target: 'es2022',
+    // Tailwind v4 本身要求的浏览器。更老的目标会让 Lightning CSS 把 oklch 换算成 lab，
+    // 浮点数的最后一位在 Windows 和 Linux 上不同，CI 的构建结果就和提交的对不上
+    cssTarget: ['chrome111', 'edge111', 'firefox128', 'safari16.4'],
     modulePreload: { polyfill: false },
     chunkSizeWarningLimit: 700,
   },
