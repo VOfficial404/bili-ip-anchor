@@ -45,6 +45,12 @@ jobs:
         run: |
           git diff --exit-code -- core/web
           test -z "$(git status --porcelain -- core/web)" || (git status --porcelain -- core/web && exit 1)
+      # 不一致时把 CI 构建出来的文件传上来，方便对比
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-build
+          path: core/web
 
   # 桌面客户端的界面测试不开窗口，在 Windows 上跑（和大多数用户一样）
   desktop:
