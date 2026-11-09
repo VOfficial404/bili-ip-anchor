@@ -62,7 +62,8 @@ func securityHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: https://*.hdslb.com; style-src 'self'; script-src 'self'")
+		// 面板用的 sonner 和 Radix 对话框会在运行时插入 <style>，所以样式放开 'unsafe-inline'；脚本仍然只允许本站文件
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: https://*.hdslb.com; style-src 'self' 'unsafe-inline'; script-src 'self'")
 		h.ServeHTTP(w, r)
 	})
 }
